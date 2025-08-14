@@ -183,13 +183,11 @@ func (s *KcpServer) createServerSocket(dual bool, port uint16) (*net.UDPConn, er
 
 		conn, err := net.ListenUDP("udp6", addr6)
 		if err == nil {
-
 			return conn, nil
 		}
 		Log.Warning("[KCP] Server: failed to create IPv6 dual-mode socket: %v, falling back to IPv4", err)
 		// Fallback to IPv4
 		addr4 := &net.UDPAddr{IP: net.IPv4zero, Port: int(port)}
-
 		conn, err = net.ListenUDP("udp4", addr4)
 		if err != nil {
 			Log.Error("[KCP] Server: failed to create IPv4 socket: %v", err)
@@ -198,8 +196,8 @@ func (s *KcpServer) createServerSocket(dual bool, port uint16) (*net.UDPConn, er
 
 		return conn, nil
 	}
-	addr := &net.UDPAddr{IP: net.IPv4zero, Port: int(port)}
 
+	addr := &net.UDPAddr{IP: net.IPv4zero, Port: int(port)}
 	conn, err := net.ListenUDP("udp4", addr)
 	if err != nil {
 		Log.Error("[KCP] Server: failed to create socket: %v", err)
@@ -212,7 +210,6 @@ func (s *KcpServer) createServerSocket(dual bool, port uint16) (*net.UDPConn, er
 func (s *KcpServer) processMessage(segment []byte, remote *net.UDPAddr) {
 	id := ConnectionHash(remote)
 	if c, ok := s.connections[id]; ok {
-
 		c.RawInput(segment)
 		return
 	}
@@ -228,6 +225,7 @@ func (s *KcpServer) createConnection(connectionId int, remote *net.UDPAddr) *Kcp
 	cookie := GenerateCookie()
 	// wrap callbacks to include connectionId and add/remove semantics
 	onConnected := func(conn *KcpServerConnection) {
+		Log.Debug("[KCP] Server: OnConnected connectionId: %d", connectionId)
 		// add to map
 		s.connections[connectionId] = conn
 
@@ -242,6 +240,7 @@ func (s *KcpServer) createConnection(connectionId int, remote *net.UDPAddr) *Kcp
 		}
 	}
 	onDisconnected := func() {
+		Log.Debug("[KCP] Server: OnDisconnected connectionId: %d", connectionId)
 		// schedule removal
 		s.toRemove[connectionId] = struct{}{}
 
@@ -250,6 +249,7 @@ func (s *KcpServer) createConnection(connectionId int, remote *net.UDPAddr) *Kcp
 		}
 	}
 	onError := func(errorCode ErrorCode, reason string) {
+		Log.Error("[KCP] Server: OnError connectionId: %d", connectionId)
 		if s.onError != nil {
 			s.onError(connectionId, errorCode, reason)
 		}

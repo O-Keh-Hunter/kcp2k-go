@@ -13,7 +13,7 @@ func ResolveHostname(hostname string) ([]net.IP, bool) {
 	// NOTE: dns lookup is blocking. this can take a second.
 	addresses, err := net.LookupIP(hostname)
 	if err != nil {
-		Log.Info(fmt.Sprintf("[KCP] Common: Failed to resolve host: %s reason: %v", hostname, err))
+		Log.Error(fmt.Sprintf("[KCP] Common: Failed to resolve host: %s reason: %v", hostname, err))
 		return nil, false
 	}
 	return addresses, len(addresses) >= 1
@@ -30,7 +30,7 @@ func ConfigureSocketBuffers(conn *net.UDPConn, recvBufferSize, sendBufferSize in
 	conn.SetReadBuffer(recvBufferSize)
 	conn.SetWriteBuffer(sendBufferSize)
 
-	Log.Info(fmt.Sprintf("[KCP] Common: RecvBuf = %d SendBuf = %d", recvBufferSize, sendBufferSize))
+	Log.Debug(fmt.Sprintf("[KCP] Common: RecvBuf = %d SendBuf = %d", recvBufferSize, sendBufferSize))
 }
 
 // ConnectionHash generates a connection hash from IP+Port

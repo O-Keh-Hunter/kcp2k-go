@@ -2,6 +2,7 @@ package kcp2k
 
 import (
 	"fmt"
+	"math"
 	"sync"
 	"time"
 
@@ -20,7 +21,7 @@ const (
 	METADATA_SIZE_UNRELIABLE = CHANNEL_HEADER_SIZE + COOKIE_HEADER_SIZE
 
 	// KCP分片上限（frg为1字节，最大255片）
-	FRG_MAX = 255
+	FRG_MAX = math.MaxUint8
 )
 
 type KcpPeerEventHandler interface {
@@ -62,8 +63,6 @@ type KcpPeer struct {
 	// ping定时
 	LastPingTime uint32
 	LastPongTime uint32
-
-
 
 	// 最大消息长度
 	ReliableMax   int
@@ -193,7 +192,7 @@ func (p *KcpPeer) Reset(config KcpConfig) {
 	type kcpDeadLinkSetter interface {
 		SetDeadLink(uint32)
 	}
-	
+
 	// 如果 KCP 支持设置 dead_link，则设置它
 	if setter, ok := any(p.Kcp).(kcpDeadLinkSetter); ok {
 		setter.SetDeadLink(uint32(config.MaxRetransmits))
@@ -338,9 +337,7 @@ func (p *KcpPeer) OnRawInputReliable(message []byte) {
 		return
 	}
 
-
-	// 修复 KCP Input 调用，使用正确的参数
-	// xtaci/kcp-go 的 Input 方法签名是 Input(data []byte, regular, ack bool)
+	// input into kcp, but skip channel byte
 	input := p.Kcp.Input(message, false, false)
 	if input != 0 {
 		Log.Warning("[KCP] Peer: input failed with error=%d for buffer with length=%d", input, len(message))
@@ -429,12 +426,12 @@ func (p *KcpPeer) SendPing() {
 	// 发送 ping 时，包含本地时间戳，这样我们就可以从 pong 计算 RTT
 	pingData := make([]byte, 4)
 	Encode32U(pingData, 0, p.Time())
-	
+
 	// 发送 ping 时重置超时计时器
 	p.lock.Lock()
 	p.lastReceiveTime = p.Time()
 	p.lock.Unlock()
-	
+
 	p.SendReliable(KcpHeaderPing, pingData)
 }
 
@@ -443,12 +440,12 @@ func (p *KcpPeer) SendPong(pingTimestamp uint32) {
 	// 发送 pong 时，包含原始 ping 时间戳
 	pongData := make([]byte, 4)
 	Encode32U(pongData, 0, pingTimestamp)
-	
+
 	// 发送 pong 时重置超时计时器
 	p.lock.Lock()
 	p.lastReceiveTime = p.Time()
 	p.lock.Unlock()
-	
+
 	p.SendReliable(KcpHeaderPong, pongData)
 }
 
@@ -687,7 +684,6 @@ func (p *KcpPeer) TickIncoming_Connected(time uint32) {
 		case KcpHeaderHello:
 			// 我们正在等待 Hello 消息
 			// 它证明另一端说我们的协议
-	
 			p.State = KcpAuthenticated
 			if p.Handler != nil {
 				p.Handler.OnAuthenticated()
@@ -740,10 +736,10 @@ func (p *KcpPeer) TickIncoming_Authenticated(time uint32) {
 				}
 			} else {
 				// 空数据 = 攻击者，或出了问题
-			if p.Handler != nil {
-				p.Handler.OnError(ErrorCodeInvalidReceive,
-					"[KCP] Peer:received empty Data message while Authenticated. Disconnecting the connection.")
-			}
+				if p.Handler != nil {
+					p.Handler.OnError(ErrorCodeInvalidReceive,
+						"[KCP] Peer:received empty Data message while Authenticated. Disconnecting the connection.")
+				}
 				p.Disconnect()
 			}
 		case KcpHeaderPing:
@@ -798,7 +794,6 @@ func (p *KcpPeer) TickOutgoing() {
 		p.HandleDeadLink()
 		// 更新刷新出消息
 		if p.Kcp != nil {
-			// xtaci/kcp-go 的 Update 方法不需要参数
 			p.Kcp.Update()
 		}
 	case KcpDisconnected:

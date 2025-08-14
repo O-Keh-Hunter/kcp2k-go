@@ -52,7 +52,7 @@ func NewKcpClient(onConnected func(), onData func([]byte, KcpChannel), onDisconn
 
 // OnAuthenticated is invoked by peer when the handshake completes.
 func (c *KcpClient) OnAuthenticated() {
-
+	Log.Debug("[KCP] Client: OnConnected connectionId: %d", c.peer.Cookie)
 	c.connected = true
 	if c.onConnected != nil {
 		c.onConnected()
@@ -68,7 +68,7 @@ func (c *KcpClient) OnData(data []byte, channel KcpChannel) {
 
 // OnDisconnected tears down connection and calls user callback.
 func (c *KcpClient) OnDisconnected() {
-
+	Log.Debug("[KCP] Client: OnDisconnected connectionId: %d", c.peer.Cookie)
 	c.connected = false
 	if c.conn != nil {
 		_ = c.conn.Close()
@@ -85,15 +85,14 @@ func (c *KcpClient) OnDisconnected() {
 
 // OnError forwards error details to user callback.
 func (c *KcpClient) OnError(errorCode ErrorCode, message string) {
+	Log.Error("[KCP] Client: OnError: %v, %s connectionId: %d", errorCode, message, c.peer.Cookie)
 	if c.onError != nil {
-		Log.Error("[KCP] Client: onError: %v, %s", errorCode, message)
 		c.onError(errorCode, message)
 	}
 }
 
 // RawSend sends one raw packet over UDP.
 func (c *KcpClient) RawSend(data []byte) {
-
 	if c.conn == nil {
 		Log.Warning("[KCP] Client: conn is nil")
 		return
@@ -104,7 +103,6 @@ func (c *KcpClient) RawSend(data []byte) {
 		Log.Error("[KCP] Client.RawSend: error sending data: %v", err)
 		return
 	}
-
 }
 
 // Connected returns whether the client is connected.
@@ -138,9 +136,7 @@ func (c *KcpClient) Connect(address string, port uint16) error {
 
 	// reset peer for a fresh session; cookie will be assigned from first server message
 	c.peer.Reset(c.config)
-
 	c.remoteAddr = &net.UDPAddr{IP: ips[0], Port: int(port)}
-
 	conn, err := net.DialUDP("udp", nil, c.remoteAddr)
 	if err != nil {
 		c.OnError(ErrorCodeUnexpected, fmt.Sprintf("failed to dial %s:%d", address, port))
