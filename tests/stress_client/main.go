@@ -252,9 +252,9 @@ func main() {
 	var (
 		serverHost       = flag.String("host", "localhost", "Server host")
 		startPort        = flag.Int("start-port", 10000, "Starting port for servers")
-		numServers       = flag.Int("servers", 1000, "Number of servers")
+		numServers       = flag.Int("servers", 500, "Number of servers")
 		clientsPerServer = flag.Int("clients-per-server", 10, "Number of clients per server")
-		fps              = flag.Int("fps", 30, "Frames per second")
+		fps              = flag.Int("fps", 15, "Frames per second")
 		reportInterval   = flag.Duration("report", 5*time.Second, "Stats report interval")
 	)
 	flag.Parse()

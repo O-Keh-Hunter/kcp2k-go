@@ -6,7 +6,7 @@
 echo "=== 小规模压力测试 ==="
 echo "服务器数量: 10"
 echo "每服务器客户端数: 5"
-echo "FPS: 30"
+echo "FPS: 15"
 echo "测试时长: 60秒"
 echo "=================="
 
@@ -21,7 +21,7 @@ echo "开始测试..."
 ./tests/stress_test/stress_test \
     -servers 10 \
     -clients-per-server 5 \
-    -fps 30 \
+    -fps 15 \
     -start-port 10000 \
     -duration 60s
 

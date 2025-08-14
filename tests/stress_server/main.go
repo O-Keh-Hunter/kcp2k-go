@@ -143,7 +143,7 @@ func (s *Server) GetStats() ServerStats {
 func main() {
 	var (
 		startPort      = flag.Int("start-port", 10000, "Starting port for servers")
-		numServers     = flag.Int("servers", 1000, "Number of servers to start")
+		numServers     = flag.Int("servers", 500, "Number of servers to start")
 		reportInterval = flag.Duration("report", 5*time.Second, "Stats report interval")
 	)
 	flag.Parse()

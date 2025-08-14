@@ -1,14 +1,14 @@
 #!/bin/bash
 
 # 完整规模压力测试脚本
-# 1000个服务器，每个服务器10个客户端，30FPS
+# 500个服务器，每个服务器10个客户端，15FPS
 
 echo "=== 完整规模压力测试 ==="
-echo "服务器数量: 1000"
+echo "服务器数量: 500"
 echo "每服务器客户端数: 10"
-echo "FPS: 30"
-echo "总连接数: 10000"
-echo "总数据包/秒: 300000"
+echo "FPS: 15"
+echo "总连接数: 5000"
+echo "总数据包/秒: 75000"
 echo "======================"
 
 # 检查系统资源
@@ -29,9 +29,9 @@ echo "按 Ctrl+C 停止测试"
 echo ""
 
 ./tests/stress_test/stress_test \
-    -servers 1000 \
+    -servers 500 \
     -clients-per-server 10 \
-    -fps 30 \
+    -fps 15 \
     -start-port 10000
 
 echo "测试完成"

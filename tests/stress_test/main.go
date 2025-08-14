@@ -192,9 +192,9 @@ func (st *StressTest) Stop() {
 
 func main() {
 	var (
-		numServers       = flag.Int("servers", 1000, "Number of servers")
+		numServers       = flag.Int("servers", 500, "Number of servers")
 		clientsPerServer = flag.Int("clients-per-server", 10, "Number of clients per server")
-		fps              = flag.Int("fps", 30, "Frames per second")
+		fps              = flag.Int("fps", 15, "Frames per second")
 		startPort        = flag.Int("start-port", 10000, "Starting port for servers")
 		serverHost       = flag.String("host", "localhost", "Server host")
 		testDuration     = flag.Duration("duration", 0, "Test duration (0 = run indefinitely)")

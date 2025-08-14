@@ -68,37 +68,71 @@
 
 ## 运行测试
 
-### 跨语言兼容性测试
-```bash
-# 运行所有跨语言测试
-../tools/scripts/testing/run_all_tests.sh
+### 手动运行测试组件
 
-# 运行特定场景测试
-../tools/scripts/testing/run_csharp_server_go_client.sh
-../tools/scripts/testing/run_go_server_csharp_client.sh
+#### 跨语言兼容性测试
+```bash
+# C# 服务端 + Go 客户端
+cd tests/csharp_server_go_client
+dotnet run &
+go run go_client.go
+
+# Go 服务端 + C# 客户端
+cd tests/go_server_csharp_client
+go run go_server.go &
+dotnet run
 ```
 
-### 压力测试
+#### 压力测试组件
 ```bash
-# 小规模压力测试
-../tools/scripts/performance/test_small.sh
-
-# 大规模压力测试
-../tools/scripts/performance/test_full.sh
-
-# 手动运行压力测试组件
+# 构建压力测试程序
 go build -o tests/stress_server/stress_server ./tests/stress_server
 go build -o tests/stress_client/stress_client ./tests/stress_client
 go build -o tests/stress_test/stress_test ./tests/stress_test
+
+# 手动运行压力测试
+./tests/stress_test/stress_test -servers 500 -clients-per-server 10 -fps 15
 ```
+
+### 使用测试脚本
+
+#### 跨语言兼容性测试脚本
+```bash
+# 运行所有跨语言测试
+./tools/scripts/testing/run_all_tests.sh
+
+# 运行特定场景测试
+./tools/scripts/testing/run_csharp_server_go_client.sh
+./tools/scripts/testing/run_go_server_csharp_client.sh
+```
+
+#### 性能测试脚本
+```bash
+# 小规模测试 (推荐先运行)
+./tools/scripts/performance/test_small.sh
+
+# 完整规模测试 (需要大量系统资源)
+./tools/scripts/performance/test_full.sh
+```
+
+#### 脚本参数说明
+- **test_small.sh**: 10服务器 × 5客户端 × 15FPS，适合功能验证
+- **test_full.sh**: 500服务器 × 10客户端 × 15FPS，适合性能压力测试
+- **测试时长**: 默认60秒，可通过脚本内参数调整
+- **端口范围**: 10000-10499 (小规模), 10000-10499 (完整规模)
 
 ## 注意事项
 
-- 测试脚本已移动到 `tools/scripts/testing/` 目录
-- 性能测试脚本位于 `tools/scripts/performance/` 目录
+### 环境要求
 - 运行测试前请确保在项目根目录执行
 - 确保系统已安装 .NET 8.0 和 Go 1.19+
-- 测试结果和日志文件仍保存在 `tests/test_results/` 目录
+- 测试结果和日志文件保存在 `tests/test_results/` 目录
+
+### 脚本使用注意事项
+1. **权限**: 确保脚本有执行权限 (`chmod +x script_name.sh`)
+2. **依赖**: 性能测试需要先构建相关的测试程序
+3. **资源**: 完整规模测试需要大量 CPU 和内存资源
+4. **平台**: 脚本主要在 Unix-like 系统上测试 (Linux/macOS)
 
 ## 测试结果
 
