@@ -17,18 +17,21 @@ import (
 )
 
 type Client struct {
-	ID        int
-	ServerID  int
-	KcpClient *kcp2k.KcpClient
-	Stats     *ClientStats
-	mu        sync.RWMutex
-	stopChan  chan struct{}
-	connected bool
+	ID             int
+	ServerID       int
+	KcpClient      *kcp2k.KcpClient
+	Stats          *ClientStats
+	mu             sync.RWMutex
+	stopChan       chan struct{}
+	connected      bool
+	pendingPackets map[int]*PendingPacket
+	packetID       int
 }
 
 type ClientStats struct {
 	PacketsSent     int64
 	PacketsReceived int64
+	PacketsLost     int64
 	BytesSent       int64
 	BytesReceived   int64
 	Latency         time.Duration
@@ -36,12 +39,19 @@ type ClientStats struct {
 	Connected       bool
 }
 
+type PendingPacket struct {
+	ID        int
+	SentTime  time.Time
+}
+
 func NewClient(id, serverID int) *Client {
 	return &Client{
-		ID:       id,
-		ServerID: serverID,
-		Stats:    &ClientStats{StartTime: time.Now()},
-		stopChan: make(chan struct{}),
+		ID:             id,
+		ServerID:       serverID,
+		Stats:          &ClientStats{StartTime: time.Now()},
+		stopChan:       make(chan struct{}),
+		pendingPackets: make(map[int]*PendingPacket),
+		packetID:       0,
 	}
 }
 
@@ -103,9 +113,26 @@ func (c *Client) onConnected() {
 
 func (c *Client) onData(data []byte, channel kcp2k.KcpChannel) {
 	c.mu.Lock()
+	defer c.mu.Unlock()
+	
 	c.Stats.PacketsReceived++
 	c.Stats.BytesReceived += int64(len(data))
-	c.mu.Unlock()
+	
+	// 尝试解析响应数据包以计算延迟
+	dataStr := string(data)
+	if strings.HasPrefix(dataStr, "ECHO_") {
+		// 解析数据包ID: ECHO_clientID_serverID_packetID_timestamp
+		parts := strings.Split(dataStr, "_")
+		if len(parts) >= 4 {
+			if packetID, err := strconv.Atoi(parts[3]); err == nil {
+				if pending, exists := c.pendingPackets[packetID]; exists {
+					// 计算真实的网络往返延迟
+					c.Stats.Latency = time.Since(pending.SentTime)
+					delete(c.pendingPackets, packetID)
+				}
+			}
+		}
+	}
 }
 
 func (c *Client) onDisconnected() {
@@ -140,7 +167,6 @@ func (c *Client) SendPackets(fps int) {
 	ticker := time.NewTicker(time.Duration(1000/fps) * time.Millisecond)
 	defer ticker.Stop()
 
-	packetID := 0
 	for {
 		select {
 		case <-c.stopChan:
@@ -150,20 +176,44 @@ func (c *Client) SendPackets(fps int) {
 				continue
 			}
 
+			c.mu.Lock()
+			c.packetID++
+			currentPacketID := c.packetID
+			c.mu.Unlock()
+
 			// Create a test packet with timestamp and packet ID
 			packet := fmt.Sprintf("PACKET_%d_%d_%d_%s",
-				c.ID, c.ServerID, packetID, time.Now().Format("15:04:05.000"))
+				c.ID, c.ServerID, currentPacketID, time.Now().Format("15:04:05.000"))
 
-			start := time.Now()
+			sendTime := time.Now()
 			c.KcpClient.Send([]byte(packet), kcp2k.KcpReliable)
 
 			c.mu.Lock()
 			c.Stats.PacketsSent++
 			c.Stats.BytesSent += int64(len(packet))
-			c.Stats.Latency = time.Since(start)
+			// 记录待响应的数据包用于延迟计算
+			c.pendingPackets[currentPacketID] = &PendingPacket{
+				ID:       currentPacketID,
+				SentTime: sendTime,
+			}
 			c.mu.Unlock()
 
-			packetID++
+			// 清理超时的待响应数据包（超过5秒认为丢失）
+			c.cleanupTimeoutPackets()
+		}
+	}
+}
+
+func (c *Client) cleanupTimeoutPackets() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	
+	now := time.Now()
+	for id, pending := range c.pendingPackets {
+		if now.Sub(pending.SentTime) > 5*time.Second {
+			// 统计丢包
+			c.Stats.PacketsLost++
+			delete(c.pendingPackets, id)
 		}
 	}
 }
@@ -195,9 +245,11 @@ type TotalStats struct {
 	TotalConnections     int64
 	TotalPacketsSent     int64
 	TotalPacketsReceived int64
+	TotalPacketsLost     int64
 	TotalBytesSent       int64
 	TotalBytesReceived   int64
 	AverageLatency       time.Duration
+	PacketLossRate       float64
 }
 
 func NewClientManager() *ClientManager {
@@ -216,7 +268,7 @@ func (cm *ClientManager) GetTotalStats() TotalStats {
 	cm.mu.RLock()
 	defer cm.mu.RUnlock()
 
-	var totalPacketsSent, totalPacketsReceived int64
+	var totalPacketsSent, totalPacketsReceived, totalPacketsLost int64
 	var totalBytesSent, totalBytesReceived int64
 	var totalLatency time.Duration
 	var connectedClients int64
@@ -227,6 +279,7 @@ func (cm *ClientManager) GetTotalStats() TotalStats {
 			connectedClients++
 			totalPacketsSent += stats.PacketsSent
 			totalPacketsReceived += stats.PacketsReceived
+			totalPacketsLost += stats.PacketsLost
 			totalBytesSent += stats.BytesSent
 			totalBytesReceived += stats.BytesReceived
 			totalLatency += stats.Latency
@@ -238,13 +291,21 @@ func (cm *ClientManager) GetTotalStats() TotalStats {
 		avgLatency = totalLatency / time.Duration(connectedClients)
 	}
 
+	// 计算丢包率
+	var packetLossRate float64
+	if totalPacketsSent > 0 {
+		packetLossRate = float64(totalPacketsLost) / float64(totalPacketsSent) * 100.0
+	}
+
 	return TotalStats{
 		TotalConnections:     connectedClients,
 		TotalPacketsSent:     totalPacketsSent,
 		TotalPacketsReceived: totalPacketsReceived,
+		TotalPacketsLost:     totalPacketsLost,
 		TotalBytesSent:       totalBytesSent,
 		TotalBytesReceived:   totalBytesReceived,
 		AverageLatency:       avgLatency,
+		PacketLossRate:       packetLossRate,
 	}
 }
 
@@ -319,6 +380,8 @@ func main() {
 				log.Printf("Connected Clients: %d", stats.TotalConnections)
 				log.Printf("Total Packets Sent: %d", stats.TotalPacketsSent)
 				log.Printf("Total Packets Received: %d", stats.TotalPacketsReceived)
+				log.Printf("Total Packets Lost: %d", stats.TotalPacketsLost)
+				log.Printf("Packet Loss Rate: %.2f%%", stats.PacketLossRate)
 				log.Printf("Total Bytes Sent: %d", stats.TotalBytesSent)
 				log.Printf("Total Bytes Received: %d", stats.TotalBytesReceived)
 				log.Printf("Average Latency: %v", stats.AverageLatency)
@@ -348,6 +411,8 @@ func main() {
 	log.Printf("Connected Clients: %d", finalStats.TotalConnections)
 	log.Printf("Total Packets Sent: %d", finalStats.TotalPacketsSent)
 	log.Printf("Total Packets Received: %d", finalStats.TotalPacketsReceived)
+	log.Printf("Total Packets Lost: %d", finalStats.TotalPacketsLost)
+	log.Printf("Packet Loss Rate: %.2f%%", finalStats.PacketLossRate)
 	log.Printf("Total Bytes Sent: %d", finalStats.TotalBytesSent)
 	log.Printf("Total Bytes Received: %d", finalStats.TotalBytesReceived)
 	log.Printf("Average Latency: %v", finalStats.AverageLatency)

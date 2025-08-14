@@ -96,12 +96,25 @@ func (s *Server) onData(connectionId int, data []byte, channel kcp2k.KcpChannel)
 	s.Stats.BytesReceived += int64(len(data))
 	s.mu.Unlock()
 
-	// Echo back the data
-	s.KcpServer.Send(connectionId, data, channel)
+	// 处理客户端数据包并生成回显响应
+	dataStr := string(data)
+	var response []byte
+	
+	// 如果是测试数据包，转换为ECHO格式
+	if len(dataStr) > 7 && dataStr[:7] == "PACKET_" {
+		// 将 PACKET_ 替换为 ECHO_ 以便客户端识别
+		response = []byte("ECHO_" + dataStr[7:])
+	} else {
+		// 对于其他数据，直接回显
+		response = data
+	}
+
+	// 发送响应
+	s.KcpServer.Send(connectionId, response, channel)
 
 	s.mu.Lock()
 	s.Stats.PacketsSent++
-	s.Stats.BytesSent += int64(len(data))
+	s.Stats.BytesSent += int64(len(response))
 	s.mu.Unlock()
 }
 
