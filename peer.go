@@ -3,6 +3,7 @@ package kcp2k
 import (
 	"fmt"
 	"math"
+	"runtime/debug"
 	"sync"
 	"time"
 
@@ -648,9 +649,10 @@ func (p *KcpPeer) HandleChoked() {
 func (p *KcpPeer) TickIncoming() {
 	defer func() {
 		if r := recover(); r != nil {
+			stack := debug.Stack()
 			if p.Handler != nil {
 				p.Handler.OnError(ErrorCodeUnexpected,
-					fmt.Sprintf("[KCP] Peer:unexpected panic: %v", r))
+					fmt.Sprintf("[KCP] Peer:TickIncoming panic: %v\nStack trace:\n%s", r, string(stack)))
 			}
 			p.Disconnect()
 		}
@@ -773,9 +775,10 @@ func (p *KcpPeer) TickIncoming_Authenticated(time uint32) {
 func (p *KcpPeer) TickOutgoing() {
 	defer func() {
 		if r := recover(); r != nil {
+			stack := debug.Stack()
 			if p.Handler != nil {
 				p.Handler.OnError(ErrorCodeUnexpected,
-					fmt.Sprintf("[KCP] Peer:unexpected panic: %v", r))
+					fmt.Sprintf("[KCP] Peer:TickOutgoing panic: %v\nStack trace:\n%s", r, string(stack)))
 			}
 			p.Disconnect()
 		}
