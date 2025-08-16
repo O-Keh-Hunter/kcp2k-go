@@ -2,7 +2,10 @@ module github.com/O-Keh-Hunter/kcp2k-go
 
 go 1.24.6
 
-require github.com/xtaci/kcp-go/v5 v5.6.24
+require (
+	github.com/xtaci/kcp-go/v5 v5.6.24
+	google.golang.org/protobuf v1.23.0
+)
 
 require (
 	github.com/klauspost/cpuid/v2 v2.2.6 // indirect
