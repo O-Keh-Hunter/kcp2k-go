@@ -1,0 +1,57 @@
+# Lockstep 压测默认配置
+
+# 服务器配置
+server:
+  address: "127.0.0.1"
+  port: 8888              # 房间端口起始
+  metrics_port: 8887      # 监控指标端口
+  rooms: 300
+  players_per_room: 10
+  frame_rate: 15          # 服务端下行帧率 (66ms)
+  
+# 客户端配置
+client:
+  total_clients: 3000
+  input_interval: 33  # 客户端上行间隔 (ms) - 30帧
+  input_size: 40      # 上行input包大小 (字节)
+  connect_timeout: 10 # 连接超时 (秒)
+  reconnect_interval: 5 # 重连间隔 (秒)
+  max_reconnects: 3   # 最大重连次数
+  
+# 测试配置
+test:
+  duration: "5m"      # 测试持续时间
+  warmup: "30s"       # 预热时间
+  cooldown: "10s"     # 冷却时间
+  
+# 性能监控
+monitoring:
+  metrics_interval: 1000  # 指标收集间隔 (ms)
+  log_level: "info"       # 日志级别
+  enable_pprof: false     # 启用性能分析
+  pprof_port: 6060        # 性能分析端口
+  
+# 网络配置
+network:
+  kcp:
+    nodelay: 1
+    interval: 10
+    resend: 2
+    nc: 1
+    sndwnd: 128
+    rcvwnd: 128
+    mtu: 1400
+    
+# 负载配置
+load:
+  ramp_up_time: "1m"      # 负载爬升时间
+  steady_time: "3m"       # 稳定负载时间
+  ramp_down_time: "1m"    # 负载下降时间
+  
+# 报告配置
+reporting:
+  output_dir: "results/reports"
+  log_dir: "results/logs"
+  format: "markdown"      # 报告格式: markdown, json, csv
+  include_charts: true    # 包含图表
+  detailed_stats: true    # 详细统计

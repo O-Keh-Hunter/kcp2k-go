@@ -1,0 +1,81 @@
+# Lockstep 断线重连测试配置
+
+# 服务器配置
+server:
+  address: "127.0.0.1"
+  port: 8888              # 房间端口起始
+  metrics_port: 8887      # 监控指标端口
+  rooms: 200              # 减少房间数以专注重连测试
+  players_per_room: 10
+  frame_rate: 15
+  
+# 客户端配置 - 重连测试
+client:
+  total_clients: 2000     # 减少客户端数量
+  input_interval: 33
+  input_size: 40
+  connect_timeout: 8      # 更长的连接超时
+  reconnect_interval: 2   # 快速重连
+  max_reconnects: 10      # 更多重连尝试
+  
+# 测试配置
+test:
+  duration: "8m"          # 中等测试时间
+  warmup: "1m"
+  cooldown: "30s"
+  
+# 性能监控
+monitoring:
+  metrics_interval: 1000
+  log_level: "info"
+  enable_pprof: false
+  pprof_port: 6060
+  
+# 网络配置
+network:
+  kcp:
+    nodelay: 1
+    interval: 10
+    resend: 2
+    nc: 1
+    sndwnd: 128
+    rcvwnd: 128
+    mtu: 1400
+    
+# 负载配置
+load:
+  ramp_up_time: "1m"
+  steady_time: "6m"
+  ramp_down_time: "1m"
+  
+# 断线重连特定配置
+reconnect:
+  disconnect_rate: 0.05   # 5% 的客户端会断线
+  disconnect_interval: "30s"  # 每30秒触发一次断线
+  disconnect_duration: "5s"   # 断线持续5秒
+  reconnect_jitter: "2s"      # 重连时间抖动
+  
+  # 断线模式
+  patterns:
+    - name: "random"          # 随机断线
+      probability: 0.6
+    - name: "burst"           # 突发断线
+      probability: 0.3
+    - name: "gradual"         # 渐进断线
+      probability: 0.1
+      
+  # 重连策略
+  strategy:
+    backoff: "exponential"    # 指数退避
+    initial_delay: "1s"       # 初始延迟
+    max_delay: "30s"          # 最大延迟
+    multiplier: 2.0           # 退避倍数
+    
+# 报告配置
+reporting:
+  output_dir: "results/reports"
+  log_dir: "results/logs"
+  format: "markdown"
+  include_charts: true
+  detailed_stats: true
+  reconnect_analysis: true    # 重连分析报告

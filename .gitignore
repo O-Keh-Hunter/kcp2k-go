@@ -493,3 +493,6 @@ tests/go_server_csharp_client/go_server
 tests/stress_client/stress_client
 tests/stress_server/stress_server
 tests/stress_test/stress_test
+lockstep-server
+stress_client
+stress_server

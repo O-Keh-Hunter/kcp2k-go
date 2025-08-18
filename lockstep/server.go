@@ -2,9 +2,11 @@ package lockstep
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log"
 	"math"
+	"net/http"
 	"os"
 	"os/signal"
 	"runtime"
@@ -27,30 +29,8 @@ type LockStepServer struct {
 	logger      *log.Logger
 
 	// 性能监控字段
-	startTime    time.Time
-	frameStats   *FrameStats
-	networkStats *NetworkStats
-}
-
-// FrameStats 帧统计信息
-type FrameStats struct {
-	totalFrames   uint64
-	missedFrames  uint64
-	lateFrames    uint64
-	frameTimeSum  time.Duration
-	lastFrameTime time.Time
-	mutex         sync.RWMutex
-}
-
-// NetworkStats 网络统计信息
-type NetworkStats struct {
-	totalPackets uint64
-	lostPackets  uint64
-	latencySum   time.Duration
-	latencyCount uint64
-	maxLatency   time.Duration
-	minLatency   time.Duration
-	mutex        sync.RWMutex
+	startTime     time.Time
+	metricsServer *http.Server
 }
 
 // PortManager 端口管理器
@@ -65,8 +45,8 @@ type PortManager struct {
 func NewLockStepServer(config *LockStepConfig) *LockStepServer {
 	// 创建端口管理器
 	portManager := &PortManager{
-		startPort:   config.ServerPort + 1,
-		currentPort: config.ServerPort + 1,
+		startPort:   config.ServerPort,
+		currentPort: config.ServerPort,
 		usedPorts:   make(map[uint16]bool),
 	}
 
@@ -81,10 +61,6 @@ func NewLockStepServer(config *LockStepConfig) *LockStepServer {
 		logger:      logger,
 		portManager: portManager,
 		startTime:   time.Now(),
-		frameStats:  &FrameStats{},
-		networkStats: &NetworkStats{
-			minLatency: time.Hour, // 初始化为很大的值
-		},
 	}
 
 	// 创建房间管理器
@@ -134,6 +110,11 @@ func (s *LockStepServer) Start() error {
 	// 启动房间管理器
 	s.rooms.Start()
 
+	// 启动指标服务器（如果配置了MetricsPort）
+	if s.config.MetricsPort > 0 {
+		s.StartMetricsServer()
+	}
+
 	return nil
 }
 
@@ -148,6 +129,9 @@ func (s *LockStepServer) Stop() {
 
 	s.running = false
 	close(s.stopChan)
+
+	// 停止指标服务器
+	s.StopMetricsServer()
 
 	// 停止房间管理器
 	s.rooms.Stop()
@@ -245,20 +229,23 @@ func (s *LockStepServer) processFrame(room *Room) {
 	frameStartTime := time.Now()
 
 	// 记录帧统计
-	s.frameStats.mutex.Lock()
-	s.frameStats.totalFrames++
-	if !s.frameStats.lastFrameTime.IsZero() {
-		frameDuration := frameStartTime.Sub(s.frameStats.lastFrameTime)
-		s.frameStats.frameTimeSum += frameDuration
+	if room.FrameStats != nil {
+		room.FrameStats.mutex.Lock()
+		room.FrameStats.totalFrames++
 
-		// 检查是否为迟到的帧
-		expectedInterval := time.Duration(1000/room.Config.FrameRate) * time.Millisecond
-		if frameDuration > expectedInterval*110/100 { // 允许10%的误差
-			s.frameStats.lateFrames++
+		if !room.FrameStats.lastFrameTime.IsZero() {
+			frameDuration := frameStartTime.Sub(room.FrameStats.lastFrameTime)
+			room.FrameStats.frameTimeSum += frameDuration
+
+			// 检查是否为迟到的帧
+			expectedInterval := time.Duration(1000/room.Config.FrameRate) * time.Millisecond
+			if frameDuration > expectedInterval*110/100 { // 允许10%的误差
+				room.FrameStats.lateFrames++
+			}
 		}
+		room.FrameStats.lastFrameTime = frameStartTime
+		room.FrameStats.mutex.Unlock()
 	}
-	s.frameStats.lastFrameTime = frameStartTime
-	s.frameStats.mutex.Unlock()
 
 	// 创建新帧
 	frameID := room.CurrentFrameID + 1
@@ -296,10 +283,10 @@ func (s *LockStepServer) processFrame(room *Room) {
 	}
 
 	// 更新帧统计 - 如果有玩家缺少输入，记录为丢帧
-	if missedInputCount > 0 {
-		s.frameStats.mutex.Lock()
-		s.frameStats.missedFrames++
-		s.frameStats.mutex.Unlock()
+	if missedInputCount > 0 && room.FrameStats != nil {
+		room.FrameStats.mutex.Lock()
+		room.FrameStats.missedFrames++
+		room.FrameStats.mutex.Unlock()
 	}
 
 	// 存储帧数据
@@ -367,11 +354,12 @@ func (s *LockStepServer) broadcastToRoom(room *Room, msg *LockStepMessage) {
 		}
 	}
 
-	// 更新网络统计 - 记录发送的包数量
-	if sentCount > 0 {
-		s.networkStats.mutex.Lock()
-		s.networkStats.totalPackets += sentCount
-		s.networkStats.mutex.Unlock()
+	// 更新网络统计 - 记录发送的包数量和字节数
+	if sentCount > 0 && room.NetworkStats != nil {
+		room.NetworkStats.mutex.Lock()
+		room.NetworkStats.totalPackets += sentCount
+		room.NetworkStats.bytesSent += uint64(len(data)) * sentCount
+		room.NetworkStats.mutex.Unlock()
 	}
 }
 
@@ -481,19 +469,24 @@ func (s *LockStepServer) onRoomConnected(room *Room, connectionID int) {
 }
 
 func (s *LockStepServer) onRoomData(room *Room, connectionID int, data []byte, _ kcp2k.KcpChannel) {
-	// 更新网络统计 - 记录接收到的包
-	s.networkStats.mutex.Lock()
-	s.networkStats.totalPackets++
-	s.networkStats.mutex.Unlock()
+	// 更新网络统计 - 记录接收到的包和字节数
+	if room.NetworkStats != nil {
+		room.NetworkStats.mutex.Lock()
+		room.NetworkStats.totalPackets++
+		room.NetworkStats.bytesReceived += uint64(len(data))
+		room.NetworkStats.mutex.Unlock()
+	}
 
 	var msg LockStepMessage
 	err := proto.Unmarshal(data, &msg)
 	if err != nil {
 		s.logger.Printf("Room %s: Failed to unmarshal message from connection %d: %v", room.ID, connectionID, err)
 		// 记录为丢包（解析失败）
-		s.networkStats.mutex.Lock()
-		s.networkStats.lostPackets++
-		s.networkStats.mutex.Unlock()
+		if room.NetworkStats != nil {
+			room.NetworkStats.mutex.Lock()
+			room.NetworkStats.lostPackets++
+			room.NetworkStats.mutex.Unlock()
+		}
 		return
 	}
 
@@ -502,9 +495,11 @@ func (s *LockStepServer) onRoomData(room *Room, connectionID int, data []byte, _
 
 func (s *LockStepServer) onRoomDisconnected(room *Room, connectionID int) {
 	// 记录网络断开为丢包
-	s.networkStats.mutex.Lock()
-	s.networkStats.lostPackets++
-	s.networkStats.mutex.Unlock()
+	if room.NetworkStats != nil {
+		room.NetworkStats.mutex.Lock()
+		room.NetworkStats.lostPackets++
+		room.NetworkStats.mutex.Unlock()
+	}
 
 	// 通过房间查找玩家
 	room.Mutex.Lock()
@@ -532,9 +527,11 @@ func (s *LockStepServer) onRoomDisconnected(room *Room, connectionID int) {
 
 func (s *LockStepServer) onRoomError(room *Room, connectionID int, error kcp2k.ErrorCode, reason string) {
 	// 记录网络错误为丢包
-	s.networkStats.mutex.Lock()
-	s.networkStats.lostPackets++
-	s.networkStats.mutex.Unlock()
+	if room.NetworkStats != nil {
+		room.NetworkStats.mutex.Lock()
+		room.NetworkStats.lostPackets++
+		room.NetworkStats.mutex.Unlock()
+	}
 
 	s.logger.Printf("Room %s: Connection %d error: %v - %s", room.ID, connectionID, error, reason)
 }
@@ -617,7 +614,7 @@ func (s *LockStepServer) handleFrameRequest(room *Room, connectionID int, payloa
 
 	// 记录缺失的帧
 	if len(missingFrames) > 0 {
-		s.logger.Printf("Room %s: Missing frames in request range %d-%d: %v (total missing: %d)", 
+		s.logger.Printf("Room %s: Missing frames in request range %d-%d: %v (total missing: %d)",
 			room.ID, req.StartId, req.EndId, missingFrames, len(missingFrames))
 	}
 
@@ -725,7 +722,7 @@ func (s *LockStepServer) handlePing(room *Room, connectionID int, payload []byte
 		latency := time.Duration(currentTime-clientTimestamp) * time.Millisecond
 
 		// 更新网络统计信息
-		s.updateNetworkStats(latency)
+		s.updateNetworkStats(room, latency)
 
 		// 通过房间查找玩家并更新延迟信息
 		room.Mutex.RLock()
@@ -771,24 +768,28 @@ func (s *LockStepServer) handlePing(room *Room, connectionID int, payload []byte
 }
 
 // updateNetworkStats 更新网络统计信息
-func (s *LockStepServer) updateNetworkStats(latency time.Duration) {
-	s.networkStats.mutex.Lock()
-	defer s.networkStats.mutex.Unlock()
+func (s *LockStepServer) updateNetworkStats(room *Room, latency time.Duration) {
+	if room.NetworkStats == nil {
+		return
+	}
+
+	room.NetworkStats.mutex.Lock()
+	defer room.NetworkStats.mutex.Unlock()
 
 	// 更新延迟统计
-	s.networkStats.latencySum += latency
-	s.networkStats.latencyCount++
+	room.NetworkStats.latencySum += latency
+	room.NetworkStats.latencyCount++
 
 	// 更新最大/最小延迟
-	if latency > s.networkStats.maxLatency {
-		s.networkStats.maxLatency = latency
+	if latency > room.NetworkStats.maxLatency {
+		room.NetworkStats.maxLatency = latency
 	}
-	if latency < s.networkStats.minLatency {
-		s.networkStats.minLatency = latency
+	if latency < room.NetworkStats.minLatency {
+		room.NetworkStats.minLatency = latency
 	}
 
 	// 更新总包数
-	s.networkStats.totalPackets++
+	room.NetworkStats.totalPackets++
 }
 
 // GetRoomInfo 获取房间信息
@@ -796,58 +797,114 @@ func (s *LockStepServer) GetRoomInfo(roomID RoomID) (*Room, bool) {
 	return s.GetRoom(roomID)
 }
 
-// GetServerStats 获取服务器统计信息
+// GetRoomMonitoringInfo 获取单个房间的监控信息
+func (s *LockStepServer) GetRoomMonitoringInfo(roomID RoomID) (map[string]interface{}, error) {
+	room, exists := s.GetRoom(roomID)
+	if !exists {
+		return nil, fmt.Errorf("room %s not found", roomID)
+	}
+
+	return room.GetRoomMonitoringInfo(), nil
+}
+
+// GetServerStats 获取服务器统计信息（汇总所有房间）
 func (s *LockStepServer) GetServerStats() map[string]interface{} {
 	s.mutex.RLock()
 	defer s.mutex.RUnlock()
 
-	// 获取帧统计信息
-	s.frameStats.mutex.RLock()
-	frameStats := map[string]interface{}{
-		"total_frames":   s.frameStats.totalFrames,
-		"missed_frames":  s.frameStats.missedFrames,
-		"late_frames":    s.frameStats.lateFrames,
-		"avg_frame_time": float64(0),
-	}
-	if s.frameStats.totalFrames > 0 {
-		frameStats["avg_frame_time"] = float64(s.frameStats.frameTimeSum.Nanoseconds()) / float64(s.frameStats.totalFrames) / 1e6 // 转换为毫秒
-	}
-	s.frameStats.mutex.RUnlock()
+	allRooms := s.rooms.GetAllRooms()
 
-	// 获取网络统计信息
-	s.networkStats.mutex.RLock()
-	networkStats := map[string]interface{}{
-		"total_packets": s.networkStats.totalPackets,
-		"lost_packets":  s.networkStats.lostPackets,
-		"avg_latency":   float64(0),
-		"max_latency":   s.networkStats.maxLatency.Milliseconds(),
-		"min_latency":   s.networkStats.minLatency.Milliseconds(),
-	}
-	if s.networkStats.latencyCount > 0 {
-		networkStats["avg_latency"] = float64(s.networkStats.latencySum.Nanoseconds()) / float64(s.networkStats.latencyCount) / 1e6 // 转换为毫秒
-	}
-	if s.networkStats.minLatency == time.Hour {
-		networkStats["min_latency"] = 0 // 如果没有延迟数据，显示0
-	}
-	s.networkStats.mutex.RUnlock()
+	// 汇总所有房间的帧统计信息
+	var totalFrames, missedFrames, lateFrames uint64
+	var frameTimeSum time.Duration
+	frameCount := 0
+
+	// 汇总所有房间的网络统计信息
+	var totalPackets, lostPackets, bytesReceived, bytesSent uint64
+	var latencySum time.Duration
+	var maxLatency, minLatency time.Duration
+	latencyCount := 0
+	minLatency = time.Hour // 初始化为很大的值
 
 	// 计算总玩家数
 	totalPlayers := 0
-	for _, room := range s.rooms.GetAllRooms() {
+
+	for _, room := range allRooms {
 		totalPlayers += len(room.Players)
+
+		// 汇总帧统计
+		if room.FrameStats != nil {
+			frameStats := room.GetFrameStats()
+			totalFrames += frameStats.GetTotalFrames()
+			missedFrames += frameStats.GetMissedFrames()
+			lateFrames += frameStats.GetLateFrames()
+			frameTimeSum += frameStats.frameTimeSum
+			frameCount++
+		}
+
+		// 汇总网络统计
+		if room.NetworkStats != nil {
+			netStats := room.GetNetworkStats()
+			totalPackets += netStats.GetTotalPackets()
+			lostPackets += netStats.GetLostPackets()
+			bytesReceived += netStats.GetBytesReceived()
+			bytesSent += netStats.GetBytesSent()
+
+			// 延迟统计
+			netStats.mutex.RLock()
+			latencySum += netStats.latencySum
+			latencyCount += int(netStats.latencyCount)
+			if netStats.maxLatency > maxLatency {
+				maxLatency = netStats.maxLatency
+			}
+			if netStats.minLatency < minLatency && netStats.minLatency > 0 {
+				minLatency = netStats.minLatency
+			}
+			netStats.mutex.RUnlock()
+		}
+	}
+
+	// 计算平均帧时间
+	avgFrameTime := float64(0)
+	if totalFrames > 0 {
+		avgFrameTime = float64(frameTimeSum.Nanoseconds()) / float64(totalFrames) / 1e6 // 转换为毫秒
+	}
+
+	// 计算平均延迟
+	avgLatency := float64(0)
+	if latencyCount > 0 {
+		avgLatency = float64(latencySum.Nanoseconds()) / float64(latencyCount) / 1e6 // 转换为毫秒
+	}
+
+	// 处理最小延迟
+	minLatencyMs := int64(0)
+	if minLatency != time.Hour && minLatency > 0 {
+		minLatencyMs = minLatency.Milliseconds()
 	}
 
 	// 计算运行时间
 	uptime := time.Since(s.startTime).Milliseconds()
 
-	allRooms := s.rooms.GetAllRooms()
 	return map[string]interface{}{
 		"total_rooms":   len(allRooms),
 		"total_players": totalPlayers,
 		"running":       s.running,
 		"uptime":        uptime,
-		"frame_stats":   frameStats,
-		"network_stats": networkStats,
+		"frame_stats": map[string]interface{}{
+			"total_frames":   totalFrames,
+			"missed_frames":  missedFrames,
+			"late_frames":    lateFrames,
+			"avg_frame_time": avgFrameTime,
+		},
+		"network_stats": map[string]interface{}{
+			"total_packets":  totalPackets,
+			"lost_packets":   lostPackets,
+			"bytes_received": bytesReceived,
+			"bytes_sent":     bytesSent,
+			"avg_latency":    avgLatency,
+			"max_latency":    maxLatency.Milliseconds(),
+			"min_latency":    minLatencyMs,
+		},
 	}
 }
 
@@ -872,11 +929,18 @@ func (s *LockStepServer) HealthCheck() map[string]interface{} {
 	var memStats runtime.MemStats
 	runtime.ReadMemStats(&memStats)
 
-	// 计算丢包率
-	s.networkStats.mutex.RLock()
-	totalPackets := s.networkStats.totalPackets
-	lostPackets := s.networkStats.lostPackets
-	s.networkStats.mutex.RUnlock()
+	// 计算丢包率 - 汇总所有房间的统计
+	var totalPackets, lostPackets uint64
+	s.mutex.RLock()
+	for _, room := range s.rooms.rooms {
+		if room.NetworkStats != nil {
+			room.NetworkStats.mutex.RLock()
+			totalPackets += room.NetworkStats.totalPackets
+			lostPackets += room.NetworkStats.lostPackets
+			room.NetworkStats.mutex.RUnlock()
+		}
+	}
+	s.mutex.RUnlock()
 
 	var packetLossRate float64
 	if totalPackets > 0 {
@@ -902,5 +966,53 @@ func (s *LockStepServer) HealthCheck() map[string]interface{} {
 		"packet_loss_rate": packetLossRate,
 		"memory_usage_mb":  float64(memStats.Alloc) / 1024 / 1024,
 		"timestamp":        time.Now().Unix(),
+	}
+}
+
+// StartMetricsServer 启动指标HTTP服务器
+func (s *LockStepServer) StartMetricsServer() {
+	mux := http.NewServeMux()
+	
+	// Metrics endpoint
+	mux.HandleFunc("/metrics", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		stats := s.GetServerStats()
+		json.NewEncoder(w).Encode(stats)
+	})
+	
+	// Health check endpoint
+	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		health := s.HealthCheck()
+		json.NewEncoder(w).Encode(health)
+	})
+	
+	// Create HTTP server
+	s.metricsServer = &http.Server{
+		Addr:    fmt.Sprintf(":%d", s.config.MetricsPort),
+		Handler: mux,
+	}
+	
+	// Start server in goroutine
+	go func() {
+		s.logger.Printf("Starting metrics server on port %d", s.config.MetricsPort)
+		if err := s.metricsServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			s.logger.Printf("Metrics server error: %v", err)
+		}
+	}()
+}
+
+// StopMetricsServer 停止指标HTTP服务器
+func (s *LockStepServer) StopMetricsServer() {
+	if s.metricsServer != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		
+		if err := s.metricsServer.Shutdown(ctx); err != nil {
+			s.logger.Printf("Error stopping metrics server: %v", err)
+		} else {
+			s.logger.Printf("Metrics server stopped")
+		}
+		s.metricsServer = nil
 	}
 }

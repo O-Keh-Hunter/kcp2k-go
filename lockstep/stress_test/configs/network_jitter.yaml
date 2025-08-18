@@ -1,0 +1,114 @@
+# Lockstep 网络抖动测试配置
+
+# 服务器配置
+server:
+  address: "127.0.0.1"
+  port: 8888              # 房间端口起始
+  metrics_port: 8887      # 监控指标端口
+  rooms: 300              # 中等房间数量
+  players_per_room: 10
+  frame_rate: 15
+  
+# 客户端配置 - 网络抖动测试
+client:
+  total_clients: 3000     # 中等客户端数量
+  input_interval: 33
+  input_size: 40
+  connect_timeout: 15     # 更长的超时以应对网络抖动
+  reconnect_interval: 5
+  max_reconnects: 5
+  
+# 测试配置
+test:
+  duration: "6m"
+  warmup: "1m"
+  cooldown: "30s"
+  
+# 性能监控
+monitoring:
+  metrics_interval: 500   # 更频繁的监控以捕获抖动
+  log_level: "info"
+  enable_pprof: false
+  pprof_port: 6060
+  
+# 网络配置 - 针对抖动优化
+network:
+  kcp:
+    nodelay: 1
+    interval: 20          # 稍慢的重传以适应抖动
+    resend: 3             # 更多重传
+    nc: 1
+    sndwnd: 256           # 更大的窗口
+    rcvwnd: 256
+    mtu: 1400
+    
+# 负载配置
+load:
+  ramp_up_time: "1m"
+  steady_time: "4m"
+  ramp_down_time: "1m"
+  
+# 网络抖动特定配置
+network_jitter:
+  # 延迟抖动
+  latency:
+    base_delay: "20ms"      # 基础延迟
+    jitter_range: "50ms"    # 抖动范围 ±50ms
+    jitter_frequency: "2s"  # 抖动频率
+    
+  # 丢包模拟
+  packet_loss:
+    base_rate: 0.01         # 基础丢包率 1%
+    burst_rate: 0.05        # 突发丢包率 5%
+    burst_duration: "3s"    # 突发持续时间
+    burst_interval: "30s"   # 突发间隔
+    
+  # 带宽限制
+  bandwidth:
+    limit: "10Mbps"         # 带宽限制
+    variation: 0.3          # 带宽变化 ±30%
+    
+  # 抖动模式
+  patterns:
+    - name: "sine_wave"     # 正弦波抖动
+      amplitude: "30ms"
+      period: "60s"
+      probability: 0.4
+      
+    - name: "random_spikes" # 随机尖峰
+      max_spike: "100ms"
+      frequency: "10s"
+      probability: 0.3
+      
+    - name: "gradual_drift" # 渐进漂移
+      drift_rate: "1ms/s"
+      max_drift: "50ms"
+      probability: 0.3
+      
+  # 网络条件模拟
+  conditions:
+    - name: "wifi"          # WiFi 环境
+      latency_base: "15ms"
+      jitter_range: "30ms"
+      loss_rate: 0.02
+      
+    - name: "mobile_4g"     # 4G 移动网络
+      latency_base: "50ms"
+      jitter_range: "80ms"
+      loss_rate: 0.03
+      
+    - name: "congested"     # 拥塞网络
+      latency_base: "100ms"
+      jitter_range: "150ms"
+      loss_rate: 0.05
+      
+# 报告配置
+reporting:
+  output_dir: "results/reports"
+  log_dir: "results/logs"
+  format: "markdown"
+  include_charts: true
+  detailed_stats: true
+  network_analysis: true      # 网络分析报告
+  latency_histogram: true     # 延迟直方图
+  jitter_analysis: true       # 抖动分析

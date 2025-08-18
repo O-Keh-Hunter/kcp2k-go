@@ -140,6 +140,253 @@ type Room struct {
 	StopChan       chan struct{}        `json:"-"`                // 停止信号通道
 	CreatedAt      time.Time            `json:"created_at"`       // 创建时间
 	running        bool                 `json:"-"`                // 运行状态
+	
+	// 房间级别的统计信息
+	FrameStats   *FrameStats   `json:"-"` // 帧统计信息
+	NetworkStats *NetworkStats `json:"-"` // 网络统计信息
+}
+
+// FrameStats 帧统计信息
+type FrameStats struct {
+	totalFrames   uint64
+	missedFrames  uint64
+	lateFrames    uint64
+	frameTimeSum  time.Duration
+	lastFrameTime time.Time
+	mutex         sync.RWMutex
+}
+
+// GetTotalFrames 获取总帧数
+func (fs *FrameStats) GetTotalFrames() uint64 {
+	fs.mutex.RLock()
+	defer fs.mutex.RUnlock()
+	return fs.totalFrames
+}
+
+// GetMissedFrames 获取丢失帧数
+func (fs *FrameStats) GetMissedFrames() uint64 {
+	fs.mutex.RLock()
+	defer fs.mutex.RUnlock()
+	return fs.missedFrames
+}
+
+// GetLateFrames 获取延迟帧数
+func (fs *FrameStats) GetLateFrames() uint64 {
+	fs.mutex.RLock()
+	defer fs.mutex.RUnlock()
+	return fs.lateFrames
+}
+
+// GetAverageFrameTime 获取平均帧时间
+func (fs *FrameStats) GetAverageFrameTime() time.Duration {
+	fs.mutex.RLock()
+	defer fs.mutex.RUnlock()
+	if fs.totalFrames == 0 {
+		return 0
+	}
+	return fs.frameTimeSum / time.Duration(fs.totalFrames)
+}
+
+// NetworkStats 网络统计信息
+type NetworkStats struct {
+	totalPackets uint64
+	lostPackets  uint64
+	bytesReceived uint64
+	bytesSent    uint64
+	latencySum   time.Duration
+	latencyCount uint64
+	maxLatency   time.Duration
+	minLatency   time.Duration
+	mutex        sync.RWMutex
+}
+
+// GetTotalPackets 获取总包数
+func (ns *NetworkStats) GetTotalPackets() uint64 {
+	ns.mutex.RLock()
+	defer ns.mutex.RUnlock()
+	return ns.totalPackets
+}
+
+// GetLostPackets 获取丢包数
+func (ns *NetworkStats) GetLostPackets() uint64 {
+	ns.mutex.RLock()
+	defer ns.mutex.RUnlock()
+	return ns.lostPackets
+}
+
+// GetAverageLatency 获取平均延迟
+func (ns *NetworkStats) GetAverageLatency() time.Duration {
+	ns.mutex.RLock()
+	defer ns.mutex.RUnlock()
+	if ns.latencyCount == 0 {
+		return 0
+	}
+	return ns.latencySum / time.Duration(ns.latencyCount)
+}
+
+// GetMaxLatency 获取最大延迟
+func (ns *NetworkStats) GetMaxLatency() time.Duration {
+	ns.mutex.RLock()
+	defer ns.mutex.RUnlock()
+	return ns.maxLatency
+}
+
+// GetMinLatency 获取最小延迟
+func (ns *NetworkStats) GetMinLatency() time.Duration {
+	ns.mutex.RLock()
+	defer ns.mutex.RUnlock()
+	return ns.minLatency
+}
+
+// GetBytesReceived 获取接收字节数
+func (ns *NetworkStats) GetBytesReceived() uint64 {
+	ns.mutex.RLock()
+	defer ns.mutex.RUnlock()
+	return ns.bytesReceived
+}
+
+// GetBytesSent 获取发送字节数
+func (ns *NetworkStats) GetBytesSent() uint64 {
+	ns.mutex.RLock()
+	defer ns.mutex.RUnlock()
+	return ns.bytesSent
+}
+
+// Room统计信息方法
+
+// GetFrameStats 获取房间帧统计信息
+func (r *Room) GetFrameStats() *FrameStats {
+	r.Mutex.RLock()
+	defer r.Mutex.RUnlock()
+	return r.FrameStats
+}
+
+// GetNetworkStats 获取房间网络统计信息
+func (r *Room) GetNetworkStats() *NetworkStats {
+	r.Mutex.RLock()
+	defer r.Mutex.RUnlock()
+	return r.NetworkStats
+}
+
+// UpdateFrameStats 更新帧统计信息
+func (r *Room) UpdateFrameStats(totalFrames, missedFrames, lateFrames uint64, frameTimeSum time.Duration, lastFrameTime time.Time) {
+	if r.FrameStats == nil {
+		return
+	}
+	r.FrameStats.mutex.Lock()
+	defer r.FrameStats.mutex.Unlock()
+	r.FrameStats.totalFrames = totalFrames
+	r.FrameStats.missedFrames = missedFrames
+	r.FrameStats.lateFrames = lateFrames
+	r.FrameStats.frameTimeSum = frameTimeSum
+	r.FrameStats.lastFrameTime = lastFrameTime
+}
+
+// IncrementFrameStats 增量更新帧统计信息
+func (r *Room) IncrementFrameStats(missed, late bool, frameDuration time.Duration) {
+	if r.FrameStats == nil {
+		return
+	}
+	r.FrameStats.mutex.Lock()
+	defer r.FrameStats.mutex.Unlock()
+	r.FrameStats.totalFrames++
+	if missed {
+		r.FrameStats.missedFrames++
+	}
+	if late {
+		r.FrameStats.lateFrames++
+	}
+	r.FrameStats.frameTimeSum += frameDuration
+	r.FrameStats.lastFrameTime = time.Now()
+}
+
+// UpdateNetworkStats 更新网络统计信息
+func (r *Room) UpdateNetworkStats(totalPackets, lostPackets, bytesReceived, bytesSent uint64, latency time.Duration) {
+	if r.NetworkStats == nil {
+		return
+	}
+	r.NetworkStats.mutex.Lock()
+	defer r.NetworkStats.mutex.Unlock()
+	r.NetworkStats.totalPackets = totalPackets
+	r.NetworkStats.lostPackets = lostPackets
+	r.NetworkStats.bytesReceived = bytesReceived
+	r.NetworkStats.bytesSent = bytesSent
+	if latency > 0 {
+		r.NetworkStats.latencySum += latency
+		r.NetworkStats.latencyCount++
+		if latency > r.NetworkStats.maxLatency {
+			r.NetworkStats.maxLatency = latency
+		}
+		if latency < r.NetworkStats.minLatency || r.NetworkStats.minLatency == 0 {
+			r.NetworkStats.minLatency = latency
+		}
+	}
+}
+
+// IncrementNetworkStats 增量更新网络统计信息
+func (r *Room) IncrementNetworkStats(packetsReceived, packetsSent, bytesReceived, bytesSent uint64, lost bool, latency time.Duration) {
+	if r.NetworkStats == nil {
+		return
+	}
+	r.NetworkStats.mutex.Lock()
+	defer r.NetworkStats.mutex.Unlock()
+	r.NetworkStats.totalPackets += packetsReceived + packetsSent
+	if lost {
+		r.NetworkStats.lostPackets++
+	}
+	r.NetworkStats.bytesReceived += bytesReceived
+	r.NetworkStats.bytesSent += bytesSent
+	if latency > 0 {
+		r.NetworkStats.latencySum += latency
+		r.NetworkStats.latencyCount++
+		if latency > r.NetworkStats.maxLatency {
+			r.NetworkStats.maxLatency = latency
+		}
+		if latency < r.NetworkStats.minLatency || r.NetworkStats.minLatency == 0 {
+			r.NetworkStats.minLatency = latency
+		}
+	}
+}
+
+// GetRoomStats 获取房间统计信息摘要
+func (r *Room) GetRoomStats() map[string]interface{} {
+	r.Mutex.RLock()
+	defer r.Mutex.RUnlock()
+	
+	stats := make(map[string]interface{})
+	stats["room_id"] = r.ID
+	stats["port"] = r.Port
+	stats["current_frame_id"] = r.CurrentFrameID
+	stats["max_frame_id"] = r.MaxFrameID
+	stats["player_count"] = len(r.Players)
+	stats["created_at"] = r.CreatedAt
+	stats["running"] = r.running
+	
+	if r.State != nil {
+		stats["status"] = r.State.Status
+		stats["current_players"] = r.State.CurrentPlayers
+		stats["max_players"] = r.State.MaxPlayers
+		stats["start_time"] = r.State.StartTime
+	}
+	
+	if r.FrameStats != nil {
+		stats["total_frames"] = r.FrameStats.GetTotalFrames()
+		stats["missed_frames"] = r.FrameStats.GetMissedFrames()
+		stats["late_frames"] = r.FrameStats.GetLateFrames()
+		stats["average_frame_time"] = r.FrameStats.GetAverageFrameTime().Milliseconds()
+	}
+	
+	if r.NetworkStats != nil {
+		stats["total_packets"] = r.NetworkStats.GetTotalPackets()
+		stats["lost_packets"] = r.NetworkStats.GetLostPackets()
+		stats["bytes_received"] = r.NetworkStats.GetBytesReceived()
+		stats["bytes_sent"] = r.NetworkStats.GetBytesSent()
+		stats["average_latency"] = r.NetworkStats.GetAverageLatency().Milliseconds()
+		stats["max_latency"] = r.NetworkStats.GetMaxLatency().Milliseconds()
+		stats["min_latency"] = r.NetworkStats.GetMinLatency().Milliseconds()
+	}
+	
+	return stats
 }
 
 // DefaultRoomConfig 默认房间配置

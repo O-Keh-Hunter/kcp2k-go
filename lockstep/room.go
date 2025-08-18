@@ -82,6 +82,9 @@ func (rm *RoomManager) CreateRoom(roomID RoomID, config *RoomConfig, server *Loc
 		StopChan:  make(chan struct{}),
 		CreatedAt: time.Now(),
 		running:   false,
+		// 初始化统计信息
+		FrameStats:   &FrameStats{},
+		NetworkStats: &NetworkStats{},
 	}
 
 	// 创建房间专用的KCP服务器
@@ -451,4 +454,62 @@ func (rm *RoomManager) RemoveRoom(roomID RoomID) {
 		delete(rm.rooms, roomID)
 		rm.logger.Printf("Room %s removed", roomID)
 	}
+}
+
+// GetRoomMonitoringInfo 获取单个房间的监控信息
+func (r *Room) GetRoomMonitoringInfo() map[string]interface{} {
+	r.Mutex.RLock()
+	defer r.Mutex.RUnlock()
+
+	// 获取房间基本信息
+	roomInfo := map[string]interface{}{
+		"room_id":         r.ID,
+		"port":           r.Port,
+		"state":          r.State.String(),
+		"current_frame":  r.CurrentFrameID,
+		"max_frame":      r.MaxFrameID,
+		"created_at":     r.CreatedAt.Format(time.RFC3339),
+		"running":        r.running,
+		"player_count":   len(r.Players),
+		"max_players":    r.Config.MaxPlayers,
+	}
+
+	// 添加玩家信息
+	players := make([]map[string]interface{}, 0, len(r.Players))
+	for _, player := range r.Players {
+		playerInfo := map[string]interface{}{
+			"id":            player.ID,
+			"connection_id": player.ConnectionID,
+		}
+		if player.State != nil {
+			playerInfo["online"] = player.State.Online
+			playerInfo["last_frame_id"] = player.State.LastFrameId
+			playerInfo["ping"] = player.State.Ping
+			playerInfo["last_ping_time"] = player.State.LastPingTime
+		}
+		players = append(players, playerInfo)
+	}
+	roomInfo["players"] = players
+
+	// 添加帧统计信息
+	if r.FrameStats != nil {
+		frameStats := r.GetFrameStats()
+		roomInfo["frame_stats"] = frameStats
+	}
+
+	// 添加网络统计信息
+	if r.NetworkStats != nil {
+		networkStats := r.GetNetworkStats()
+		roomInfo["network_stats"] = networkStats
+	}
+
+	// 添加房间配置信息
+	roomInfo["config"] = map[string]interface{}{
+		"max_players":  r.Config.MaxPlayers,
+		"min_players":  r.Config.MinPlayers,
+		"frame_rate":   r.Config.FrameRate,
+		"retry_window": r.Config.RetryWindow,
+	}
+
+	return roomInfo
 }

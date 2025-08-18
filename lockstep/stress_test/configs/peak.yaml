@@ -1,0 +1,64 @@
+# Lockstep 峰值负载测试配置
+
+# 服务器配置
+server:
+  address: "127.0.0.1"
+  port: 8888              # 房间端口起始
+  metrics_port: 8887      # 监控指标端口
+  rooms: 500
+  players_per_room: 10
+  frame_rate: 15          # 服务端下行帧率 (66ms)
+  
+# 客户端配置 - 峰值负载
+client:
+  total_clients: 6000     # 超出正常负载20%
+  input_interval: 30      # 更高的帧率 (33帧/秒)
+  input_size: 50          # 更大的包 (25%增加)
+  connect_timeout: 5      # 更短的超时
+  reconnect_interval: 3   # 更频繁的重连
+  max_reconnects: 5       # 更多重连尝试
+  
+# 测试配置
+test:
+  duration: "10m"         # 更长的测试时间
+  warmup: "2m"            # 更长的预热
+  cooldown: "30s"         # 更长的冷却
+  
+# 性能监控
+monitoring:
+  metrics_interval: 500   # 更频繁的监控
+  log_level: "debug"      # 详细日志
+  enable_pprof: true      # 启用性能分析
+  pprof_port: 6060
+  
+# 网络配置 - 优化性能
+network:
+  kcp:
+    nodelay: 1
+    interval: 5           # 更快的重传
+    resend: 3             # 更多重传
+    nc: 1
+    sndwnd: 256           # 更大的发送窗口
+    rcvwnd: 256           # 更大的接收窗口
+    mtu: 1400
+    
+# 负载配置 - 快速爬升
+load:
+  ramp_up_time: "2m"      # 快速爬升
+  steady_time: "6m"       # 长时间稳定负载
+  ramp_down_time: "2m"    # 快速下降
+  
+# 峰值测试特定配置
+peak:
+  burst_clients: 1000     # 突发客户端数量
+  burst_interval: "30s"   # 突发间隔
+  burst_duration: "10s"   # 突发持续时间
+  
+# 报告配置
+reporting:
+  output_dir: "results/reports"
+  log_dir: "results/logs"
+  format: "markdown"
+  include_charts: true
+  detailed_stats: true
+  performance_analysis: true  # 性能分析报告

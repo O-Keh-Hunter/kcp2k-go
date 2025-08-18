@@ -64,7 +64,7 @@ sleep 2
 
 # 启动第一个客户端
 echo "Starting client 1..."
-./lockstep-server client 127.0.0.1 8889 1 > client1.log 2>&1 &
+./lockstep-server client 127.0.0.1 8888 1 > client1.log 2>&1 &
 CLIENT1_PID=$!
 
 # 等待第一个客户端连接
@@ -72,7 +72,7 @@ sleep 2
 
 # 启动第二个客户端（游戏开始）
 echo "Starting client 2..."
-./lockstep-server client 127.0.0.1 8889 2 > client2.log 2>&1 &
+./lockstep-server client 127.0.0.1 8888 2 > client2.log 2>&1 &
 CLIENT2_PID=$!
 
 # 等待游戏开始并运行一段时间
@@ -81,7 +81,7 @@ sleep 5
 
 # 启动第三个客户端
 echo "Starting client 3..."
-./lockstep-server client 127.0.0.1 8889 3 > client3.log 2>&1 &
+./lockstep-server client 127.0.0.1 8888 3 > client3.log 2>&1 &
 CLIENT3_PID=$!
 
 # 让第三个客户端运行更长时间以接收持续的帧数据
