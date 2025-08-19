@@ -387,7 +387,6 @@ func (p *KcpPeer) OnRawInputUnreliable(message []byte) {
 			p.lock.Unlock()
 		}
 	case KcpHeaderUnrelDisconnect:
-
 		p.Disconnect()
 	}
 }
@@ -403,7 +402,6 @@ func (p *KcpPeer) Disconnect() {
 	p.SendDisconnect()
 
 	// 设置为断开连接，调用事件
-
 	p.State = KcpDisconnected
 	if p.Handler != nil {
 		p.Handler.OnDisconnected()
@@ -463,6 +461,10 @@ func (p *KcpPeer) SendReliable(header KcpHeaderReliable, content []byte) {
 		return
 	}
 
+	// 使用互斥锁保护共享缓冲区
+	p.lock.Lock()
+	defer p.lock.Unlock()
+
 	// 写入通道头部
 	p.kcpSendBuffer[0] = byte(header)
 
@@ -491,6 +493,10 @@ func (p *KcpPeer) SendUnreliable(header KcpHeaderUnreliable, content []byte) {
 		Log.Error("[KCP] Peer: failed to send unreliable message of size %d because it's larger than UnreliableMaxMessageSize=%d", len(content), p.UnreliableMax)
 		return
 	}
+
+	// 使用互斥锁保护共享缓冲区
+	p.lock.Lock()
+	defer p.lock.Unlock()
 
 	// 写入通道头部
 	// 从 0 开始，1 字节

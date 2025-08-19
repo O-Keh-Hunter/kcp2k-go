@@ -20,8 +20,8 @@ func TestDefaultKcpConfig(t *testing.T) {
 		t.Errorf("Default SendBufferSize should be 7MB, got %d", config.SendBufferSize)
 	}
 
-	if config.Mtu != 1200 {
-		t.Errorf("Default MTU should be 1200, got %d", config.Mtu)
+	if config.Mtu != 1400 {
+		t.Errorf("Default MTU should be 1400, got %d", config.Mtu)
 	}
 
 	if !config.NoDelay {

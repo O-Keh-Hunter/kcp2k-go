@@ -365,22 +365,26 @@ func TestServerToClientsReliableMessage(t *testing.T) {
 	if len(test.clientReceivedA) != 1 {
 		t.Errorf("ClientA should receive 1 message, got %d", len(test.clientReceivedA))
 	}
-	if !bytes.Equal(test.clientReceivedA[0].data, message) {
-		t.Error("ClientA message data mismatch")
-	}
-	if test.clientReceivedA[0].channel != KcpReliable {
-		t.Errorf("ClientA channel mismatch: expected %v, got %v", KcpReliable, test.clientReceivedA[0].channel)
+	if len(test.clientReceivedA) > 0 {
+		if !bytes.Equal(test.clientReceivedA[0].data, message) {
+			t.Error("ClientA message data mismatch")
+		}
+		if test.clientReceivedA[0].channel != KcpReliable {
+			t.Errorf("ClientA channel mismatch: expected %v, got %v", KcpReliable, test.clientReceivedA[0].channel)
+		}
 	}
 
 	test.sendServerToClientBlocking(connectionIdB, message, KcpReliable)
 	if len(test.clientReceivedB) != 1 {
 		t.Errorf("ClientB should receive 1 message, got %d", len(test.clientReceivedB))
 	}
-	if !bytes.Equal(test.clientReceivedB[0].data, message) {
-		t.Error("ClientB message data mismatch")
-	}
-	if test.clientReceivedB[0].channel != KcpReliable {
-		t.Errorf("ClientB channel mismatch: expected %v, got %v", KcpReliable, test.clientReceivedB[0].channel)
+	if len(test.clientReceivedB) > 0 {
+		if !bytes.Equal(test.clientReceivedB[0].data, message) {
+			t.Error("ClientB message data mismatch")
+		}
+		if test.clientReceivedB[0].channel != KcpReliable {
+			t.Errorf("ClientB channel mismatch: expected %v, got %v", KcpReliable, test.clientReceivedB[0].channel)
+		}
 	}
 }
 
