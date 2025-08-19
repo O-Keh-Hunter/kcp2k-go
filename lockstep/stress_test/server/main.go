@@ -12,6 +12,9 @@ import (
 	"github.com/O-Keh-Hunter/kcp2k-go/lockstep"
 )
 
+// 全局 YAML 配置变量
+var globalYamlConfig *Config
+
 // StressTestConfig 压测配置
 type StressTestConfig struct {
 	ServerAddr     string
@@ -29,7 +32,7 @@ func getDefaultConfig() StressTestConfig {
 		ServerAddr:     "127.0.0.1",
 		ServerPort:     8888,
 		MetricsPort:    8887,
-		RoomCount:      1,
+		RoomCount:      100,
 		PlayersPerRoom: 10,
 		FrameRate:      30, // 客户端上行30帧/秒
 		DownstreamRate: 15, // 服务端下行15帧/秒
@@ -66,6 +69,9 @@ func main() {
 		if err := yamlConfig.Validate(); err != nil {
 			log.Fatalf("Invalid config: %v", err)
 		}
+
+		// 设置全局配置变量
+		globalYamlConfig = yamlConfig
 
 		// 使用YAML配置覆盖默认配置
 		config.ServerAddr = yamlConfig.Server.Address
@@ -106,6 +112,18 @@ func main() {
 	lockstepConfig.RoomConfig.MaxPlayers = uint32(config.PlayersPerRoom)
 	lockstepConfig.RoomConfig.MinPlayers = uint32(config.PlayersPerRoom) // 设置为满员才开始
 	lockstepConfig.RoomConfig.FrameRate = uint32(config.DownstreamRate)  // 服务端下行15帧/秒
+
+	// 如果有全局的 YAML 配置，应用 KCP 设置
+	if globalYamlConfig != nil {
+		// 应用 KCP 配置
+		lockstepConfig.KcpConfig.Mtu = globalYamlConfig.Network.KCP.MTU
+		lockstepConfig.KcpConfig.NoDelay = globalYamlConfig.Network.KCP.Nodelay == 1
+		lockstepConfig.KcpConfig.Interval = uint(globalYamlConfig.Network.KCP.Interval)
+		lockstepConfig.KcpConfig.FastResend = globalYamlConfig.Network.KCP.Resend
+		lockstepConfig.KcpConfig.CongestionWindow = globalYamlConfig.Network.KCP.NC == 0
+		lockstepConfig.KcpConfig.SendWindowSize = uint(globalYamlConfig.Network.KCP.Sndwnd)
+		lockstepConfig.KcpConfig.ReceiveWindowSize = uint(globalYamlConfig.Network.KCP.Rcvwnd)
+	}
 
 	// 创建LockStep服务器
 	server := lockstep.NewLockStepServer(&lockstepConfig)

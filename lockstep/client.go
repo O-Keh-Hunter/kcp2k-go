@@ -333,10 +333,15 @@ func (c *LockStepClient) onConnected() {
 }
 
 func (c *LockStepClient) onData(data []byte, channel kcp2k.KcpChannel) {
+	if len(data) == 0 {
+		c.logger.Printf("Received empty message, channel: %d", channel)
+		return
+	}
+
 	var msg LockStepMessage
 	err := proto.Unmarshal(data, &msg)
 	if err != nil {
-		c.logger.Printf("Failed to unmarshal message: %v", err)
+		c.logger.Printf("Failed to unmarshal message, channel: %d, error: %v", channel, err)
 		return
 	}
 
@@ -484,8 +489,8 @@ func (c *LockStepClient) handlePong(payload []byte) {
 		return
 	}
 
-	latency := time.Now().UnixMilli() - pongMsg.Timestamp
-	c.logger.Printf("Ping: %dms", latency)
+	// latency := time.Now().UnixMilli() - pongMsg.Timestamp
+	// c.logger.Printf("Ping: %dms", latency)
 }
 
 // handlePlayerState 处理玩家状态

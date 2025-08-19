@@ -16,6 +16,9 @@ import (
 	"github.com/O-Keh-Hunter/kcp2k-go/lockstep"
 )
 
+// 全局 YAML 配置变量
+var globalYamlConfig *YamlConfig
+
 // ClientConfig 客户端配置
 type ClientConfig struct {
 	ServerAddr       string
@@ -85,6 +88,19 @@ func (sc *StressClient) run() {
 
 	// 创建客户端配置
 	lockstepConfig := lockstep.DefaultLockStepConfig()
+
+	// 如果有全局的 YAML 配置，应用 KCP 设置
+	if globalYamlConfig != nil {
+		// 应用 KCP 配置
+		lockstepConfig.KcpConfig.Mtu = globalYamlConfig.Network.KCP.MTU
+		lockstepConfig.KcpConfig.NoDelay = globalYamlConfig.Network.KCP.Nodelay == 1
+		lockstepConfig.KcpConfig.Interval = uint(globalYamlConfig.Network.KCP.Interval)
+		lockstepConfig.KcpConfig.FastResend = globalYamlConfig.Network.KCP.Resend
+		lockstepConfig.KcpConfig.CongestionWindow = globalYamlConfig.Network.KCP.NC == 0
+		lockstepConfig.KcpConfig.SendWindowSize = uint(globalYamlConfig.Network.KCP.Sndwnd)
+		lockstepConfig.KcpConfig.ReceiveWindowSize = uint(globalYamlConfig.Network.KCP.Rcvwnd)
+	}
+
 	playerID := lockstep.PlayerID(sc.id)
 
 	// 设置回调函数
@@ -239,7 +255,7 @@ func (sc *StressClient) frameLoop() {
 				atomic.AddInt64(&sc.metrics.TotalBytesReceived, frameSize)
 
 				// 输出帧接收日志
-				sc.logger.Printf("[Client %d] Received frame %d with %d inputs", sc.id, frame.Id, len(frame.Inputs))
+				// sc.logger.Printf("[Client %d] Received frame %d with %d inputs", sc.id, frame.Id, len(frame.Inputs))
 			}
 		case <-sc.stopChan:
 			return
@@ -252,8 +268,8 @@ func getDefaultConfig() ClientConfig {
 	return ClientConfig{
 		ServerAddr:       "127.0.0.1",
 		ServerPort:       8888,
-		ClientCount:      10,
-		TestDuration:     5 * time.Minute,
+		ClientCount:      1000,
+		TestDuration:     30 * time.Minute,
 		UpstreamInterval: 33 * time.Millisecond, // 33ms上行间隔 (30帧/秒)
 		InputPacketSize:  40,                    // 40字节input包
 		ReconnectRate:    0.01,                  // 1%重连率
@@ -290,6 +306,9 @@ func main() {
 		if err := yamlConfig.Validate(); err != nil {
 			log.Fatalf("Invalid config: %v", err)
 		}
+
+		// 设置全局配置变量
+		globalYamlConfig = yamlConfig
 
 		// 使用YAML配置覆盖默认配置
 		config.ServerAddr = yamlConfig.Server.Address

@@ -41,17 +41,3 @@ network:
     sndwnd: 128
     rcvwnd: 128
     mtu: 1400
-    
-# 负载配置
-load:
-  ramp_up_time: "1m"      # 负载爬升时间
-  steady_time: "3m"       # 稳定负载时间
-  ramp_down_time: "1m"    # 负载下降时间
-  
-# 报告配置
-reporting:
-  output_dir: "results/reports"
-  log_dir: "results/logs"
-  format: "markdown"      # 报告格式: markdown, json, csv
-  include_charts: true    # 包含图表
-  detailed_stats: true    # 详细统计

@@ -247,8 +247,8 @@ func runClient() {
 					// 使用PopFrame接口主动获取下一帧
 					frame := client.PopFrame()
 					if frame != nil {
-						log.Printf("[Player %d] PopFrame got frame %d with %d inputs",
-							playerID, frame.Id, len(frame.Inputs))
+						// log.Printf("[Player %d] PopFrame got frame %d with %d inputs",
+						// 	playerID, frame.Id, len(frame.Inputs))
 					}
 				}
 			case <-sigChan:

@@ -10,12 +10,10 @@ import (
 
 // YamlConfig 压测配置结构体
 type YamlConfig struct {
-	Server     YamlServerConfig `yaml:"server"`
-	Client     YamlClientConfig `yaml:"client"`
-	Test       TestConfig       `yaml:"test"`
-	Monitoring MonitoringConfig `yaml:"monitoring"`
-	Network    NetworkConfig    `yaml:"network"`
-	Load       LoadConfig       `yaml:"load"`
+	Server  YamlServerConfig `yaml:"server"`
+	Client  YamlClientConfig `yaml:"client"`
+	Test    TestConfig       `yaml:"test"`
+	Network NetworkConfig    `yaml:"network"`
 }
 
 // YamlServerConfig 服务器配置
@@ -45,14 +43,6 @@ type TestConfig struct {
 	Cooldown string `yaml:"cooldown"`
 }
 
-// MonitoringConfig 监控配置
-type MonitoringConfig struct {
-	MetricsInterval int    `yaml:"metrics_interval"` // ms
-	LogLevel        string `yaml:"log_level"`
-	EnablePprof     bool   `yaml:"enable_pprof"`
-	PprofPort       uint16 `yaml:"pprof_port"`
-}
-
 // NetworkConfig 网络配置
 type NetworkConfig struct {
 	KCP KCPConfig `yaml:"kcp"`
@@ -67,13 +57,6 @@ type KCPConfig struct {
 	Sndwnd   int `yaml:"sndwnd"`
 	Rcvwnd   int `yaml:"rcvwnd"`
 	MTU      int `yaml:"mtu"`
-}
-
-// LoadConfig 负载配置
-type LoadConfig struct {
-	RampUpTime   string `yaml:"ramp_up_time"`
-	SteadyTime   string `yaml:"steady_time"`
-	RampDownTime string `yaml:"ramp_down_time"`
 }
 
 // LoadConfigFromFile 从YAML文件加载配置
@@ -110,11 +93,6 @@ func (c *YamlConfig) GetCooldownDuration() (time.Duration, error) {
 // GetInputInterval 获取输入间隔
 func (c *YamlConfig) GetInputInterval() time.Duration {
 	return time.Duration(c.Client.InputInterval) * time.Millisecond
-}
-
-// GetMetricsInterval 获取指标收集间隔
-func (c *YamlConfig) GetMetricsInterval() time.Duration {
-	return time.Duration(c.Monitoring.MetricsInterval) * time.Millisecond
 }
 
 // Validate 验证配置的有效性

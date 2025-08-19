@@ -316,7 +316,7 @@ func (s *LockStepServer) processFrame(room *Room) {
 		}
 
 		s.broadcastToRoom(room, msg)
-		s.logger.Printf("Room %s: Broadcasted frame %d", room.ID, frameID)
+		// s.logger.Printf("Room %s: Broadcasted frame %d", room.ID, frameID)
 	}
 }
 
@@ -468,7 +468,7 @@ func (s *LockStepServer) onRoomConnected(room *Room, connectionID int) {
 	s.logger.Printf("Room %s: Connection %d established", room.ID, connectionID)
 }
 
-func (s *LockStepServer) onRoomData(room *Room, connectionID int, data []byte, _ kcp2k.KcpChannel) {
+func (s *LockStepServer) onRoomData(room *Room, connectionID int, data []byte, channel kcp2k.KcpChannel) {
 	// 更新网络统计 - 记录接收到的包和字节数
 	if room.NetworkStats != nil {
 		room.NetworkStats.mutex.Lock()
@@ -477,10 +477,15 @@ func (s *LockStepServer) onRoomData(room *Room, connectionID int, data []byte, _
 		room.NetworkStats.mutex.Unlock()
 	}
 
+	if len(data) == 0 {
+		s.logger.Printf("Room %s: Received empty message from connection %d, channel: %d", room.ID, connectionID, channel)
+		return
+	}
+
 	var msg LockStepMessage
 	err := proto.Unmarshal(data, &msg)
 	if err != nil {
-		s.logger.Printf("Room %s: Failed to unmarshal message from connection %d: %v", room.ID, connectionID, err)
+		s.logger.Printf("Room %s: Failed to unmarshal message from connection %d, channel: %d: %v", room.ID, connectionID, channel, err)
 		// 记录为丢包（解析失败）
 		if room.NetworkStats != nil {
 			room.NetworkStats.mutex.Lock()
@@ -972,27 +977,27 @@ func (s *LockStepServer) HealthCheck() map[string]interface{} {
 // StartMetricsServer 启动指标HTTP服务器
 func (s *LockStepServer) StartMetricsServer() {
 	mux := http.NewServeMux()
-	
+
 	// Metrics endpoint
 	mux.HandleFunc("/metrics", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		stats := s.GetServerStats()
 		json.NewEncoder(w).Encode(stats)
 	})
-	
+
 	// Health check endpoint
 	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		health := s.HealthCheck()
 		json.NewEncoder(w).Encode(health)
 	})
-	
+
 	// Create HTTP server
 	s.metricsServer = &http.Server{
 		Addr:    fmt.Sprintf(":%d", s.config.MetricsPort),
 		Handler: mux,
 	}
-	
+
 	// Start server in goroutine
 	go func() {
 		s.logger.Printf("Starting metrics server on port %d", s.config.MetricsPort)
@@ -1007,7 +1012,7 @@ func (s *LockStepServer) StopMetricsServer() {
 	if s.metricsServer != nil {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		
+
 		if err := s.metricsServer.Shutdown(ctx); err != nil {
 			s.logger.Printf("Error stopping metrics server: %v", err)
 		} else {
