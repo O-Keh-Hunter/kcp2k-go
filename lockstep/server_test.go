@@ -128,7 +128,7 @@ func TestGetServerStats_WithRooms(t *testing.T) {
 			Ping:         50,
 			LastPingTime: time.Now().UnixMilli(),
 		},
-		InputBuffer: make(map[FrameID][]byte),
+		InputBuffer: make(map[FrameID]*InputMessage),
 	}
 
 	room1.Players[2] = &Player{
@@ -139,7 +139,7 @@ func TestGetServerStats_WithRooms(t *testing.T) {
 			Ping:         30,
 			LastPingTime: time.Now().UnixMilli(),
 		},
-		InputBuffer: make(map[FrameID][]byte),
+		InputBuffer: make(map[FrameID]*InputMessage),
 	}
 
 	room2.Players[3] = &Player{
@@ -150,7 +150,7 @@ func TestGetServerStats_WithRooms(t *testing.T) {
 			Ping:         40,
 			LastPingTime: time.Now().UnixMilli(),
 		},
-		InputBuffer: make(map[FrameID][]byte),
+		InputBuffer: make(map[FrameID]*InputMessage),
 	}
 
 	// 获取统计信息

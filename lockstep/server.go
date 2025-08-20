@@ -2,7 +2,6 @@ package lockstep
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"log"
 	"math"
@@ -250,13 +249,10 @@ func (s *LockStepServer) processFrame(room *Room) {
 	// 创建新帧
 	frameID := room.CurrentFrameID + 1
 	frame := &Frame{
-		Id:     uint32(frameID),
-		Inputs: make([]*PlayerInput, 0),
-		Metadata: &FrameMetadata{
-			Timestamp:    time.Now().UnixMilli(),
-			PlayerStates: s.getPlayerStates(room),
-			RoomState:    room.State,
-		},
+		FrameId:        uint32(frameID),
+		RecvTickMs:     uint32(time.Now().UnixMilli()),
+		ValidDataCount: 0,
+		DataCollection: make([]*RelayData, 0),
 	}
 
 	// 收集玩家输入
@@ -264,19 +260,32 @@ func (s *LockStepServer) processFrame(room *Room) {
 	for playerID, player := range room.Players {
 		player.Mutex.RLock()
 		if inputData, exists := player.InputBuffer[frameID]; exists {
-			frame.Inputs = append(frame.Inputs, &PlayerInput{
-				PlayerId: uint32(playerID),
-				Data:     inputData,
-				Flag:     uint32(InputFlagNormal),
+			// 计算输入延迟：当前时间 - 输入时间戳
+			delayMs := uint32(time.Now().UnixMilli() - int64(inputData.Timestamp))
+
+			// 记录输入延迟统计
+			if room.NetworkStats != nil {
+				inputLatency := time.Duration(delayMs) * time.Millisecond
+				room.NetworkStats.IncrementInputLatencyStats(inputLatency)
+			}
+
+			// 根据玩家在线状态设置Flag字段（第0位：1表示在线，0表示不在线）
+			var flag uint32 = 0
+			if player.State.Online {
+				flag |= 1 // 设置第0位为1，表示玩家在线
+			}
+
+			frame.DataCollection = append(frame.DataCollection, &RelayData{
+				SequenceId: inputData.SequenceId,
+				PlayerId:   uint32(playerID),
+				Data:       inputData.Data,
+				DelayMs:    delayMs,
+				Flag:       flag,
 			})
 			delete(player.InputBuffer, frameID)
+			frame.ValidDataCount++
 		} else {
 			// 没有输入数据，添加空输入
-			frame.Inputs = append(frame.Inputs, &PlayerInput{
-				PlayerId: uint32(playerID),
-				Data:     []byte{},
-				Flag:     uint32(InputFlagNormal),
-			})
 			missedInputCount++
 		}
 		player.Mutex.RUnlock()
@@ -298,37 +307,20 @@ func (s *LockStepServer) processFrame(room *Room) {
 
 	// 广播帧数据
 	if currentFrame, exists := room.Frames[frameID]; exists {
-		frames := []*Frame{currentFrame}
-		resp := &FrameResponse{
-			Frames:  frames,
-			Success: true,
-		}
-
-		respData, err := proto.Marshal(resp)
+		respData, err := proto.Marshal(currentFrame)
 		if err != nil {
 			s.logger.Printf("Room %s: Failed to marshal frame response: %v", room.ID, err)
 			return
 		}
 
 		msg := &LockStepMessage{
-			Type:    LockStepMessage_FRAME_RESP,
+			Type:    LockStepMessage_FRAME,
 			Payload: respData,
 		}
 
 		s.broadcastToRoom(room, msg)
 		// s.logger.Printf("Room %s: Broadcasted frame %d", room.ID, frameID)
 	}
-}
-
-// getPlayerStates 获取玩家状态
-func (s *LockStepServer) getPlayerStates(room *Room) map[uint32]*PlayerState {
-	states := make(map[uint32]*PlayerState)
-	for playerID, player := range room.Players {
-		player.Mutex.RLock()
-		states[uint32(playerID)] = player.State
-		player.Mutex.RUnlock()
-	}
-	return states
 }
 
 // broadcastToRoom 向房间广播消息
@@ -576,7 +568,7 @@ func (s *LockStepServer) handlePlayerInput(room *Room, connectionID int, payload
 	}
 
 	// 解析输入数据
-	var input PlayerInput
+	var input InputMessage
 	err := proto.Unmarshal(payload, &input)
 	if err != nil {
 		s.logger.Printf("Room %s: Failed to unmarshal player input: %v", room.ID, err)
@@ -584,13 +576,13 @@ func (s *LockStepServer) handlePlayerInput(room *Room, connectionID int, payload
 	}
 
 	frameID := room.CurrentFrameID + 1
-	s.handleInput(room, player, frameID, input.Data)
+	s.handleInput(room, player, frameID, &input)
 }
 
 // handleInput 处理输入
-func (s *LockStepServer) handleInput(room *Room, player *Player, frameID FrameID, data []byte) {
+func (s *LockStepServer) handleInput(room *Room, player *Player, frameID FrameID, input *InputMessage) {
 	player.Mutex.Lock()
-	player.InputBuffer[frameID] = data
+	player.InputBuffer[frameID] = input
 	player.Mutex.Unlock()
 }
 
@@ -608,7 +600,9 @@ func (s *LockStepServer) handleFrameRequest(room *Room, connectionID int, payloa
 	missingFrames := make([]FrameID, 0)
 
 	// 获取请求范围内的帧
-	for frameID := FrameID(req.StartId); frameID <= FrameID(req.EndId); frameID++ {
+	startFrameID := FrameID(req.FrameId)
+	endFrameID := FrameID(req.FrameId + req.Count - 1)
+	for frameID := startFrameID; frameID <= endFrameID; frameID++ {
 		if frame, exists := room.Frames[frameID]; exists {
 			frames = append(frames, frame)
 		} else {
@@ -620,12 +614,12 @@ func (s *LockStepServer) handleFrameRequest(room *Room, connectionID int, payloa
 	// 记录缺失的帧
 	if len(missingFrames) > 0 {
 		s.logger.Printf("Room %s: Missing frames in request range %d-%d: %v (total missing: %d)",
-			room.ID, req.StartId, req.EndId, missingFrames, len(missingFrames))
+			room.ID, startFrameID, endFrameID, missingFrames, len(missingFrames))
 	}
 
 	// 记录帧请求信息
 	s.logger.Printf("Room %s: Sending frame response, requested range: %d-%d, found frames: %d",
-		room.ID, req.StartId, req.EndId, len(frames))
+		room.ID, startFrameID, endFrameID, len(frames))
 
 	// 发送补帧响应
 	resp := FrameResponse{
@@ -831,6 +825,12 @@ func (s *LockStepServer) GetServerStats() map[string]interface{} {
 	latencyCount := 0
 	minLatency = time.Hour // 初始化为很大的值
 
+	// 汇总输入延迟统计信息
+	var inputLatencySum time.Duration
+	var maxInputLatency, minInputLatency time.Duration
+	inputLatencyCount := 0
+	minInputLatency = time.Hour // 初始化为很大的值
+
 	// 计算总玩家数
 	totalPlayers := 0
 
@@ -848,8 +848,8 @@ func (s *LockStepServer) GetServerStats() map[string]interface{} {
 		}
 
 		// 汇总网络统计
-		if room.NetworkStats != nil {
-			netStats := room.GetNetworkStats()
+		netStats := room.GetNetworkStats()
+		if netStats != nil {
 			totalPackets += netStats.GetTotalPackets()
 			lostPackets += netStats.GetLostPackets()
 			bytesReceived += netStats.GetBytesReceived()
@@ -864,6 +864,16 @@ func (s *LockStepServer) GetServerStats() map[string]interface{} {
 			}
 			if netStats.minLatency < minLatency && netStats.minLatency > 0 {
 				minLatency = netStats.minLatency
+			}
+
+			// 输入延迟统计
+			inputLatencySum += netStats.inputLatencySum
+			inputLatencyCount += int(netStats.inputLatencyCount)
+			if netStats.maxInputLatency > maxInputLatency {
+				maxInputLatency = netStats.maxInputLatency
+			}
+			if netStats.minInputLatency < minInputLatency && netStats.minInputLatency > 0 {
+				minInputLatency = netStats.minInputLatency
 			}
 			netStats.mutex.RUnlock()
 		}
@@ -885,6 +895,18 @@ func (s *LockStepServer) GetServerStats() map[string]interface{} {
 	minLatencyMs := int64(0)
 	if minLatency != time.Hour && minLatency > 0 {
 		minLatencyMs = minLatency.Milliseconds()
+	}
+
+	// 计算平均输入延迟
+	avgInputLatency := float64(0)
+	if inputLatencyCount > 0 {
+		avgInputLatency = float64(inputLatencySum.Nanoseconds()) / float64(inputLatencyCount) / 1e6 // 转换为毫秒
+	}
+
+	// 处理最小输入延迟
+	minInputLatencyMs := int64(0)
+	if minInputLatency != time.Hour && minInputLatency > 0 {
+		minInputLatencyMs = minInputLatency.Milliseconds()
 	}
 
 	// 计算运行时间
@@ -909,6 +931,12 @@ func (s *LockStepServer) GetServerStats() map[string]interface{} {
 			"avg_latency":    avgLatency,
 			"max_latency":    maxLatency.Milliseconds(),
 			"min_latency":    minLatencyMs,
+		},
+		"input_latency_stats": map[string]interface{}{
+			"input_latency_count": inputLatencyCount,
+			"avg_input_latency":   avgInputLatency,
+			"max_input_latency":   maxInputLatency.Milliseconds(),
+			"min_input_latency":   minInputLatencyMs,
 		},
 	}
 }
@@ -971,53 +999,5 @@ func (s *LockStepServer) HealthCheck() map[string]interface{} {
 		"packet_loss_rate": packetLossRate,
 		"memory_usage_mb":  float64(memStats.Alloc) / 1024 / 1024,
 		"timestamp":        time.Now().Unix(),
-	}
-}
-
-// StartMetricsServer 启动指标HTTP服务器
-func (s *LockStepServer) StartMetricsServer() {
-	mux := http.NewServeMux()
-
-	// Metrics endpoint
-	mux.HandleFunc("/metrics", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		stats := s.GetServerStats()
-		json.NewEncoder(w).Encode(stats)
-	})
-
-	// Health check endpoint
-	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		health := s.HealthCheck()
-		json.NewEncoder(w).Encode(health)
-	})
-
-	// Create HTTP server
-	s.metricsServer = &http.Server{
-		Addr:    fmt.Sprintf(":%d", s.config.MetricsPort),
-		Handler: mux,
-	}
-
-	// Start server in goroutine
-	go func() {
-		s.logger.Printf("Starting metrics server on port %d", s.config.MetricsPort)
-		if err := s.metricsServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			s.logger.Printf("Metrics server error: %v", err)
-		}
-	}()
-}
-
-// StopMetricsServer 停止指标HTTP服务器
-func (s *LockStepServer) StopMetricsServer() {
-	if s.metricsServer != nil {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-
-		if err := s.metricsServer.Shutdown(ctx); err != nil {
-			s.logger.Printf("Error stopping metrics server: %v", err)
-		} else {
-			s.logger.Printf("Metrics server stopped")
-		}
-		s.metricsServer = nil
 	}
 }

@@ -201,13 +201,11 @@ func runClient() {
 				if client.IsRunning() {
 					// 模拟玩家输入
 					inputCounter++
-					currentFrame := client.GetCurrentFrameID()
-					nextFrame := currentFrame + 1
 
 					// 创建简单的输入数据（可以根据需要定义更复杂的结构）
 					inputData := []byte(fmt.Sprintf("x:%d,y:%d,counter:%d", inputCounter%100, (inputCounter*2)%100, inputCounter))
 
-					err := client.SendInput(nextFrame, inputData)
+					err := client.SendInput(inputData, lockstep.InputMessage_None)
 					if err != nil {
 						log.Printf("[Player %d] Failed to send input: %v", playerID, err)
 					}
@@ -229,6 +227,39 @@ func runClient() {
 				log.Printf("[Player %d] Status - Connected: %v, Running: %v, CurrentFrame: %d, LastFrame: %d",
 					playerID, client.IsConnected(), client.IsRunning(),
 					client.GetCurrentFrameID(), client.GetLastFrameID())
+
+				// 输出 FrameStats
+				if client.FrameStats != nil {
+					totalFrames := client.FrameStats.GetTotalFrames()
+					missedFrames := client.FrameStats.GetMissedFrames()
+					lateFrames := client.FrameStats.GetLateFrames()
+					avgFrameTime := client.FrameStats.GetAverageFrameTime()
+					log.Printf("[Player %d] FrameStats - Total: %d, Missed: %d, Late: %d, AvgTime: %.2fms",
+						playerID, totalFrames, missedFrames, lateFrames, float64(avgFrameTime.Nanoseconds())/1e6)
+				}
+
+				// 输出 NetworkStats
+				if client.NetworkStats != nil {
+					totalPackets := client.NetworkStats.GetTotalPackets()
+					lostPackets := client.NetworkStats.GetLostPackets()
+					avgLatency := client.NetworkStats.GetAverageLatency()
+					maxLatency := client.NetworkStats.GetMaxLatency()
+					minLatency := client.NetworkStats.GetMinLatency()
+					bytesReceived := client.NetworkStats.GetBytesReceived()
+					bytesSent := client.NetworkStats.GetBytesSent()
+
+					avgInputLatency := client.NetworkStats.GetAverageInputLatency()
+					maxInputLatency := client.NetworkStats.GetMaxInputLatency()
+					minInputLatency := client.NetworkStats.GetMinInputLatency()
+					inputLatencyCount := client.NetworkStats.GetInputLatencyCount()
+
+					log.Printf("[Player %d] NetworkStats - Packets: Total=%d packets, Lost=%d packets, Bytes: Recv=%d bytes, Sent=%d bytes",
+						playerID, totalPackets, lostPackets, bytesReceived, bytesSent)
+					log.Printf("[Player %d] NetworkStats - Latency: Avg=%dms, Max=%dms, Min=%dms",
+						playerID, avgLatency.Milliseconds(), maxLatency.Milliseconds(), minLatency.Milliseconds())
+					log.Printf("[Player %d] NetworkStats - InputLatency: Count=%d, Avg=%dms, Max=%dms, Min=%dms",
+						playerID, inputLatencyCount, avgInputLatency.Milliseconds(), maxInputLatency.Milliseconds(), minInputLatency.Milliseconds())
+				}
 			case <-sigChan:
 				return
 			}
@@ -247,8 +278,7 @@ func runClient() {
 					// 使用PopFrame接口主动获取下一帧
 					frame := client.PopFrame()
 					if frame != nil {
-						// log.Printf("[Player %d] PopFrame got frame %d with %d inputs",
-						// 	playerID, frame.Id, len(frame.Inputs))
+						// log.Printf("[Player %d] PopFrame got frame %d with %d inputs", playerID, frame.FrameId, len(frame.DataCollection))
 					}
 				}
 			case <-sigChan:

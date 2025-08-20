@@ -19,7 +19,6 @@ type LockStepClient struct {
 	currentFrameID FrameID
 	lastFrameID    FrameID
 	frameBuffer    map[FrameID]*Frame
-	inputBuffer    map[FrameID][]byte
 	mutex          sync.RWMutex
 	connected      bool
 	running        bool
@@ -37,6 +36,16 @@ type LockStepClient struct {
 	onDisconnectedCallback func()
 
 	onErrorCallback func(error)
+
+	// 本地输入序列号
+	nextSequenceID uint32
+
+	// 序列号跟踪（用于丢包检测）
+	lastReceivedSeqID uint32 // 自己最后接收到的SequenceId
+
+	// 初始化统计信息
+	FrameStats   *FrameStats
+	NetworkStats *NetworkStats
 }
 
 // ClientCallbacks 客户端回调函数
@@ -51,19 +60,29 @@ type ClientCallbacks struct {
 	OnDisconnected func()
 
 	OnError func(error)
+
+	// Optional logger for the client
+	Logger *log.Logger
 }
 
 // NewLockStepClient 创建新的帧同步客户端
 func NewLockStepClient(config *LockStepConfig, playerID PlayerID, callbacks ClientCallbacks) *LockStepClient {
+	// Use provided logger or create default one
+	var logger *log.Logger
+	if callbacks.Logger != nil {
+		logger = callbacks.Logger
+	} else {
+		logger = log.New(log.Writer(), "[LockStepClient] ", log.LstdFlags)
+	}
+
 	client := &LockStepClient{
 		config:         *config,
 		playerID:       playerID,
 		currentFrameID: 0,
 		lastFrameID:    0,
 		frameBuffer:    make(map[FrameID]*Frame),
-		inputBuffer:    make(map[FrameID][]byte),
 		stopChan:       make(chan struct{}),
-		logger:         log.New(log.Writer(), "[LockStepClient] ", log.LstdFlags),
+		logger:         logger,
 		onPlayerJoined: callbacks.OnPlayerJoined,
 		onPlayerLeft:   callbacks.OnPlayerLeft,
 		onGameStarted:  callbacks.OnGameStarted,
@@ -73,6 +92,12 @@ func NewLockStepClient(config *LockStepConfig, playerID PlayerID, callbacks Clie
 		onDisconnectedCallback: callbacks.OnDisconnected,
 
 		onErrorCallback: callbacks.OnError,
+		nextSequenceID:  0, // 初始化nextSequenceID
+		// 初始化丢包统计
+		lastReceivedSeqID: 0,
+		// 初始化统计信息
+		FrameStats:   &FrameStats{},
+		NetworkStats: &NetworkStats{},
 	}
 
 	// 创建KCP客户端
@@ -186,18 +211,7 @@ func (c *LockStepClient) JoinRoom(roomID RoomID) error {
 }
 
 // SendInput 发送玩家输入
-func (c *LockStepClient) SendInput(frameID FrameID, inputData []byte) error {
-	c.mutex.Lock()
-	// 将输入数据缓存起来，供后续冗余输入使用
-	c.inputBuffer[frameID] = make([]byte, len(inputData))
-	copy(c.inputBuffer[frameID], inputData)
-	c.mutex.Unlock()
-
-	return c.sendInputWithFlag(frameID, inputData, uint32(InputFlagNormal)) // 普通输入，flag为0
-}
-
-// sendInputWithFlag 发送带标志的输入数据
-func (c *LockStepClient) sendInputWithFlag(frameID FrameID, inputData []byte, flag uint32) error {
+func (c *LockStepClient) SendInput(inputData []byte, inputFlag InputMessage_InputFlag) error {
 	c.mutex.Lock()
 	defer c.mutex.Unlock()
 
@@ -205,14 +219,13 @@ func (c *LockStepClient) sendInputWithFlag(frameID FrameID, inputData []byte, fl
 		return fmt.Errorf("client is not ready")
 	}
 
-	// 缓存输入数据
-	c.inputBuffer[frameID] = inputData
-
 	// 创建输入消息
+	c.nextSequenceID++
 	input := InputMessage{
-		FrameId: uint32(frameID),
-		Data:    inputData,
-		Flag:    flag,
+		SequenceId: c.nextSequenceID,
+		Timestamp:  uint64(time.Now().UnixMilli()),
+		Data:       inputData,
+		Flag:       inputFlag,
 	}
 
 	inputPayload, _ := proto.Marshal(&input)
@@ -226,23 +239,17 @@ func (c *LockStepClient) sendInputWithFlag(frameID FrameID, inputData []byte, fl
 }
 
 // RequestFrames 请求补帧
-func (c *LockStepClient) RequestFrames(startFrameID, endFrameID FrameID) error {
+func (c *LockStepClient) RequestFrames(startFrameID, count uint32) error {
 	c.mutex.Lock()
 	defer c.mutex.Unlock()
-	return c.requestFramesInternal(startFrameID, endFrameID)
-}
 
-// requestFramesInternal 内部方法，不加锁，用于已经持有锁的上下文
-func (c *LockStepClient) requestFramesInternal(startFrameID, endFrameID FrameID) error {
 	if !c.connected {
 		return fmt.Errorf("client is not connected")
 	}
 
 	req := FrameRequest{
-		PlayerId:  uint32(c.playerID),
-		StartId:   uint32(startFrameID),
-		EndId:     uint32(endFrameID),
-		Timestamp: time.Now().UnixMilli(),
+		FrameId: uint32(startFrameID),
+		Count:   count,
 	}
 
 	reqPayload, err := proto.Marshal(&req)
@@ -290,6 +297,9 @@ func (c *LockStepClient) sendMessage(msg *LockStepMessage) {
 	}
 
 	c.kcpClient.Send(msgData, kcp2k.KcpReliable)
+
+	// 更新网络统计信息（发送数据）
+	c.IncrementNetworkStats(0, 1, 0, uint64(len(msgData)), false, 0)
 }
 
 // startFrameProcessing 开始帧处理
@@ -326,7 +336,8 @@ func (c *LockStepClient) onConnected() {
 	c.connected = true
 	c.mutex.Unlock()
 
-	c.logger.Println("Connected to server")
+	c.logger.Println("[LockStepClient] Connected to server")
+	c.logger.Printf("[LockStepClient] Logger test - PlayerID: %d", c.playerID)
 	if c.onConnectedCallback != nil {
 		c.onConnectedCallback()
 	}
@@ -402,12 +413,48 @@ func (c *LockStepClient) handleFrame(payload []byte) {
 		return
 	}
 
+	frameStartTime := time.Now()
+
 	c.mutex.Lock()
-	c.frameBuffer[FrameID(frame.Id)] = &frame
-	if FrameID(frame.Id) > c.currentFrameID {
-		c.currentFrameID = FrameID(frame.Id)
+	c.frameBuffer[FrameID(frame.FrameId)] = &frame
+	if FrameID(frame.FrameId) > c.currentFrameID {
+		c.currentFrameID = FrameID(frame.FrameId)
 	}
+
+	// 检测丢包：遍历帧中的RelayData，检查SequenceId连续性
+	for _, relayData := range frame.DataCollection {
+		playerID := PlayerID(relayData.PlayerId)
+		sequenceID := relayData.SequenceId
+
+		// 如果 RelayData.PlayerId == Self.PlayerId 时，才有意义
+		// 表示用户自己的上行包，从调用 InputMessage 到 LockStep 客户端收到这个包的总延时，单位ms
+		// 方便游戏收集用户输入延时
+		if playerID == c.playerID {
+			// 记录输入延迟统计
+			inputLatency := time.Duration(relayData.DelayMs) * time.Millisecond
+			c.IncrementInputLatencyStats(inputLatency)
+
+			// 检查序列号连续性（只对第一个包之后进行检查）
+			if c.lastReceivedSeqID > 0 {
+				expected := c.lastReceivedSeqID + 1
+				if sequenceID > expected {
+					c.IncrementNetworkStats(0, 0, 0, 0, true, 0)
+				}
+			}
+
+			// 更新最后接收到的序列号
+			c.lastReceivedSeqID = sequenceID
+		}
+	}
+
 	c.mutex.Unlock()
+
+	// 更新帧统计信息
+	frameDuration := time.Since(frameStartTime)
+	c.IncrementFrameStats(false, false, frameDuration)
+
+	// 更新网络统计信息（接收到帧数据）
+	c.IncrementNetworkStats(1, 0, uint64(len(payload)), 0, false, 0)
 }
 
 // handleFrameResponse 处理补帧响应
@@ -425,17 +472,26 @@ func (c *LockStepClient) handleFrameResponse(payload []byte) {
 	}
 
 	if len(resp.Frames) == 0 {
+		c.logger.Printf("[LockStepClient] No frames in response")
 		return
 	}
 
 	c.mutex.Lock()
 	for _, frame := range resp.Frames {
-		c.frameBuffer[FrameID(frame.Id)] = frame
-		if FrameID(frame.Id) > c.currentFrameID {
-			c.currentFrameID = FrameID(frame.Id)
+		c.frameBuffer[FrameID(frame.FrameId)] = frame
+		if FrameID(frame.FrameId) > c.currentFrameID {
+			c.currentFrameID = FrameID(frame.FrameId)
+		}
+
+		// 处理输入延迟统计
+		for _, relayData := range frame.DataCollection {
+			if relayData.PlayerId == uint32(c.playerID) {
+				// 使用服务器计算好的延迟时间进行统计
+				inputLatency := time.Duration(relayData.DelayMs) * time.Millisecond
+				c.IncrementInputLatencyStats(inputLatency)
+			}
 		}
 	}
-
 	c.mutex.Unlock()
 }
 
@@ -459,20 +515,14 @@ func (c *LockStepClient) handleGameStart(payload []byte) {
 		if err != nil {
 			c.logger.Printf("Failed to unmarshal game start message: %v", err)
 		} else {
-
 			// 如果游戏已经在运行，设置当前帧ID，补帧逻辑由PopFrame触发
 			if gameStartMsg.GameAlreadyRunning && gameStartMsg.CurrentFrameId > 0 {
 				c.mutex.Lock()
-
 				c.currentFrameID = FrameID(gameStartMsg.CurrentFrameId)
 				// 重连时从0开始，补帧逻辑由PopFrame中的滑动窗口处理
 				c.lastFrameID = 0
 				c.mutex.Unlock()
-
-			} else {
-
 			}
-
 		}
 	}
 
@@ -491,6 +541,11 @@ func (c *LockStepClient) handlePong(payload []byte) {
 
 	// latency := time.Now().UnixMilli() - pongMsg.Timestamp
 	// c.logger.Printf("Ping: %dms", latency)
+	latency := time.Duration(time.Now().UnixMilli()-pongMsg.Timestamp) * time.Millisecond
+	// c.logger.Printf("Ping: %dms", latency.Milliseconds())
+
+	// 更新网络统计信息（延迟信息）
+	c.IncrementNetworkStats(1, 0, uint64(len(payload)), 0, false, latency)
 }
 
 // handlePlayerState 处理玩家状态
@@ -657,6 +712,138 @@ func (c *LockStepClient) GetRoomID() RoomID {
 	return c.roomID
 }
 
+// GetPacketLossRate 获取丢包率（0.0-1.0）
+func (c *LockStepClient) GetPacketLossRate() float64 {
+	c.mutex.RLock()
+	defer c.mutex.RUnlock()
+
+	networkStats := c.NetworkStats
+	if networkStats == nil {
+		return 0.0
+	}
+
+	totalPackets := networkStats.GetTotalPackets()
+	lostPackets := networkStats.GetLostPackets()
+	if totalPackets == 0 {
+		return 0.0
+	}
+	return float64(lostPackets) / float64(totalPackets)
+}
+
+// GetPacketLossStats 获取详细的丢包统计信息
+func (c *LockStepClient) GetPacketLossStats() (sentPackets, receivedPackets, lostPackets uint64, lossRate float64) {
+	c.mutex.RLock()
+	defer c.mutex.RUnlock()
+
+	networkStats := c.NetworkStats
+	if networkStats == nil {
+		return 0, 0, 0, 0.0
+	}
+
+	totalPackets := networkStats.GetTotalPackets()
+	lostPackets = networkStats.GetLostPackets()
+	lossRate = 0.0
+	if totalPackets > 0 {
+		lossRate = float64(lostPackets) / float64(totalPackets)
+	}
+	return totalPackets - lostPackets, totalPackets, lostPackets, lossRate
+}
+
+// ResetPacketLossStats 重置丢包统计
+func (c *LockStepClient) ResetPacketLossStats() {
+	c.lastReceivedSeqID = 0
+	// 重置网络统计
+	if c.NetworkStats != nil {
+		c.NetworkStats.Reset()
+	}
+}
+
+// GetFrameStats 获取客户端帧统计信息
+func (c *LockStepClient) GetFrameStats() *FrameStats {
+	c.mutex.RLock()
+	defer c.mutex.RUnlock()
+	return c.FrameStats
+}
+
+// GetNetworkStats 获取客户端网络统计信息
+func (c *LockStepClient) GetNetworkStats() *NetworkStats {
+	c.mutex.RLock()
+	defer c.mutex.RUnlock()
+	return c.NetworkStats
+}
+
+// UpdateFrameStats 更新帧统计信息
+func (c *LockStepClient) UpdateFrameStats(totalFrames, missedFrames, lateFrames uint64, frameTimeSum time.Duration, lastFrameTime time.Time) {
+	c.FrameStats.UpdateFrameStats(totalFrames, missedFrames, lateFrames, frameTimeSum, lastFrameTime)
+}
+
+// IncrementFrameStats 增量更新帧统计信息
+func (c *LockStepClient) IncrementFrameStats(missed, late bool, frameDuration time.Duration) {
+	c.FrameStats.IncrementFrameStats(missed, late, frameDuration)
+}
+
+// UpdateNetworkStats 更新网络统计信息
+func (c *LockStepClient) UpdateNetworkStats(totalPackets, lostPackets, bytesReceived, bytesSent uint64, latency time.Duration) {
+	c.NetworkStats.UpdateNetworkStats(totalPackets, lostPackets, bytesReceived, bytesSent, latency)
+}
+
+// IncrementNetworkStats 增量更新网络统计信息
+func (c *LockStepClient) IncrementNetworkStats(packetsReceived, packetsSent, bytesReceived, bytesSent uint64, lost bool, latency time.Duration) {
+	c.NetworkStats.IncrementNetworkStats(packetsReceived, packetsSent, bytesReceived, bytesSent, lost, latency)
+}
+
+// IncrementInputLatencyStats 增量更新输入延时统计信息
+func (c *LockStepClient) IncrementInputLatencyStats(inputLatency time.Duration) {
+	c.NetworkStats.IncrementInputLatencyStats(inputLatency)
+}
+
+// GetClientStats 获取客户端统计信息
+func (c *LockStepClient) GetClientStats() map[string]interface{} {
+	c.mutex.RLock()
+	frameStats := c.FrameStats
+	networkStats := c.NetworkStats
+	c.mutex.RUnlock()
+
+	stats := map[string]interface{}{
+		"player_id":        c.playerID,
+		"room_id":          c.roomID,
+		"connected":        c.connected,
+		"running":          c.running,
+		"current_frame":    c.currentFrameID,
+		"last_frame":       c.lastFrameID,
+		"packet_loss_rate": c.GetPacketLossRate(),
+	}
+
+	// 添加帧统计信息
+	if frameStats != nil {
+		stats["frame_stats"] = map[string]interface{}{
+			"total_frames":       frameStats.GetTotalFrames(),
+			"missed_frames":      frameStats.GetMissedFrames(),
+			"late_frames":        frameStats.GetLateFrames(),
+			"average_frame_time": frameStats.GetAverageFrameTime().String(),
+		}
+	}
+
+	// 添加网络统计信息
+	if networkStats != nil {
+		stats["network_stats"] = map[string]interface{}{
+			"total_packets":         networkStats.GetTotalPackets(),
+			"lost_packets":          networkStats.GetLostPackets(),
+			"bytes_received":        networkStats.GetBytesReceived(),
+			"bytes_sent":            networkStats.GetBytesSent(),
+			"average_latency":       networkStats.GetAverageLatency().String(),
+			"max_latency":           networkStats.GetMaxLatency().String(),
+			"min_latency":           networkStats.GetMinLatency().String(),
+			"input_latency_count":   networkStats.GetInputLatencyCount(),
+			"average_input_latency": networkStats.GetAverageInputLatency().String(),
+			"max_input_latency":     networkStats.GetMaxInputLatency().String(),
+			"min_input_latency":     networkStats.GetMinInputLatency().String(),
+		}
+	}
+
+	return stats
+}
+
 // PopFrame 弹出下一帧数据，如果没有可用帧则返回nil
 func (c *LockStepClient) PopFrame() *Frame {
 	c.mutex.Lock()
@@ -672,13 +859,21 @@ func (c *LockStepClient) PopFrame() *Frame {
 		if c.shouldTriggerFrameSync(nextFrameID) {
 			// 触发补帧，每次最多补5帧
 			c.triggerFrameSync(nextFrameID)
+			// 更新帧统计信息（丢失帧）
+			c.IncrementFrameStats(true, false, 0)
 		}
 		return nil
 	}
 
+	// 检查帧是否延迟（简单判断：如果帧ID小于当前帧ID说明可能是延迟到达的）
+	isLate := nextFrameID < c.currentFrameID
+
 	// 移除已处理的帧并更新lastFrameID
 	delete(c.frameBuffer, nextFrameID)
 	c.lastFrameID = nextFrameID
+
+	// 更新帧统计信息（成功处理的帧）
+	c.IncrementFrameStats(false, isLate, 0)
 
 	return frame
 }
@@ -709,7 +904,7 @@ func (c *LockStepClient) triggerFrameSync(startFrameID FrameID) {
 	// 如果帧不在缓冲区中，异步请求
 	if !allFramesPresent {
 		go func() {
-			err := c.requestFramesInternal(startFrameID, endFrameID)
+			err := c.RequestFrames(startFrameID, endFrameID)
 			if err != nil {
 				c.logger.Printf("Failed to request frames %d-%d: %v", startFrameID, endFrameID, err)
 			}

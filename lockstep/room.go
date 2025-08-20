@@ -203,7 +203,7 @@ func (rm *RoomManager) JoinRoom(roomID RoomID, playerID PlayerID, connectionID i
 			Online: true,
 		},
 		LastFrameID: 0, // 初始设置为0，后面会根据游戏状态调整
-		InputBuffer: make(map[FrameID][]byte),
+		InputBuffer: make(map[FrameID]*InputMessage),
 		Mutex:       sync.RWMutex{},
 	}
 
@@ -336,6 +336,9 @@ func (rm *RoomManager) cleanupRooms() {
 	rm.mutex.Lock()
 	defer rm.mutex.Unlock()
 
+	// 收集需要清理的房间ID，避免在遍历时修改map
+	roomsToCleanup := make([]RoomID, 0)
+
 	for roomID, room := range rm.rooms {
 		room.Mutex.RLock()
 		onlineCount := 0
@@ -349,9 +352,16 @@ func (rm *RoomManager) cleanupRooms() {
 
 		// 只清理创建时间超过5分钟且没有在线玩家的房间
 		if onlineCount == 0 && time.Since(createdAt) > 5*time.Minute {
+			roomsToCleanup = append(roomsToCleanup, roomID)
+		}
+	}
+
+	// 清理收集到的房间
+	for _, roomID := range roomsToCleanup {
+		if room, exists := rm.rooms[roomID]; exists {
 			rm.stopRoom(room)
 			delete(rm.rooms, roomID)
-			rm.logger.Printf("Room %s cleaned up (empty for %v)", roomID, time.Since(createdAt))
+			rm.logger.Printf("Room %s cleaned up (empty for %v)", roomID, time.Since(room.CreatedAt))
 		}
 	}
 }
@@ -456,25 +466,74 @@ func (rm *RoomManager) RemoveRoom(roomID RoomID) {
 	}
 }
 
-// GetRoomMonitoringInfo 获取单个房间的监控信息
-func (r *Room) GetRoomMonitoringInfo() map[string]interface{} {
+// Room 网络统计相关方法
+
+// GetNetworkStats 获取房间网络统计信息
+func (r *Room) GetNetworkStats() *NetworkStats {
 	r.Mutex.RLock()
 	defer r.Mutex.RUnlock()
+	return r.NetworkStats
+}
 
-	// 获取房间基本信息
-	roomInfo := map[string]interface{}{
-		"room_id":         r.ID,
-		"port":           r.Port,
-		"state":          r.State.String(),
-		"current_frame":  r.CurrentFrameID,
-		"max_frame":      r.MaxFrameID,
-		"created_at":     r.CreatedAt.Format(time.RFC3339),
-		"running":        r.running,
-		"player_count":   len(r.Players),
-		"max_players":    r.Config.MaxPlayers,
+// UpdateNetworkStats 更新房间网络统计信息
+func (r *Room) UpdateNetworkStats(totalPackets, lostPackets, bytesReceived, bytesSent uint64, latency time.Duration) {
+	if r.NetworkStats == nil {
+		return
 	}
+	r.NetworkStats.UpdateNetworkStats(totalPackets, lostPackets, bytesReceived, bytesSent, latency)
+}
 
-	// 添加玩家信息
+// IncrementNetworkStats 增量更新房间网络统计信息
+func (r *Room) IncrementNetworkStats(packetsReceived, packetsSent, bytesReceived, bytesSent uint64, lost bool, latency time.Duration) {
+	if r.NetworkStats == nil {
+		return
+	}
+	r.NetworkStats.IncrementNetworkStats(packetsReceived, packetsSent, bytesReceived, bytesSent, lost, latency)
+}
+
+// Room 帧统计相关方法
+
+// GetFrameStats 获取房间帧统计信息
+func (r *Room) GetFrameStats() *FrameStats {
+	r.Mutex.RLock()
+	defer r.Mutex.RUnlock()
+	return r.FrameStats
+}
+
+// UpdateFrameStats 更新房间帧统计信息
+func (r *Room) UpdateFrameStats(totalFrames, missedFrames, lateFrames uint64, frameTimeSum time.Duration, lastFrameTime time.Time) {
+	if r.FrameStats == nil {
+		return
+	}
+	r.FrameStats.UpdateFrameStats(totalFrames, missedFrames, lateFrames, frameTimeSum, lastFrameTime)
+}
+
+// IncrementFrameStats 增量更新房间帧统计信息
+func (r *Room) IncrementFrameStats(missed, late bool, frameDuration time.Duration) {
+	if r.FrameStats == nil {
+		return
+	}
+	r.FrameStats.IncrementFrameStats(missed, late, frameDuration)
+}
+
+// GetRoomMonitoringInfo 获取单个房间的监控信息
+func (r *Room) GetRoomMonitoringInfo() map[string]interface{} {
+	// 分段获取数据，减少锁持有时间
+	r.Mutex.RLock()
+	// 快速复制基本信息
+	roomID := r.ID
+	port := r.Port
+	currentFrame := r.CurrentFrameID
+	maxFrame := r.MaxFrameID
+	createdAt := r.CreatedAt
+	running := r.running
+	playerCount := len(r.Players)
+	maxPlayers := r.Config.MaxPlayers
+	minPlayers := r.Config.MinPlayers
+	frameRate := r.Config.FrameRate
+	retryWindow := r.Config.RetryWindow
+
+	// 复制玩家信息
 	players := make([]map[string]interface{}, 0, len(r.Players))
 	for _, player := range r.Players {
 		playerInfo := map[string]interface{}{
@@ -489,15 +548,28 @@ func (r *Room) GetRoomMonitoringInfo() map[string]interface{} {
 		}
 		players = append(players, playerInfo)
 	}
-	roomInfo["players"] = players
+	r.Mutex.RUnlock()
 
-	// 添加帧统计信息
+	// 构建返回信息（不持有锁）
+	roomInfo := map[string]interface{}{
+		"room_id":       roomID,
+		"port":          port,
+		"state":         r.State.String(),
+		"current_frame": currentFrame,
+		"max_frame":     maxFrame,
+		"created_at":    createdAt.Format(time.RFC3339),
+		"running":       running,
+		"player_count":  playerCount,
+		"max_players":   maxPlayers,
+		"players":       players,
+	}
+
+	// 添加统计信息（可能需要短暂锁定）
 	if r.FrameStats != nil {
 		frameStats := r.GetFrameStats()
 		roomInfo["frame_stats"] = frameStats
 	}
 
-	// 添加网络统计信息
 	if r.NetworkStats != nil {
 		networkStats := r.GetNetworkStats()
 		roomInfo["network_stats"] = networkStats
@@ -505,10 +577,10 @@ func (r *Room) GetRoomMonitoringInfo() map[string]interface{} {
 
 	// 添加房间配置信息
 	roomInfo["config"] = map[string]interface{}{
-		"max_players":  r.Config.MaxPlayers,
-		"min_players":  r.Config.MinPlayers,
-		"frame_rate":   r.Config.FrameRate,
-		"retry_window": r.Config.RetryWindow,
+		"max_players":  maxPlayers,
+		"min_players":  minPlayers,
+		"frame_rate":   frameRate,
+		"retry_window": retryWindow,
 	}
 
 	return roomInfo

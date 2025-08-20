@@ -5,22 +5,43 @@ package lockstep;
 option go_package = "github.com/O-Keh-Hunter/kcp2k-go/lockstep";
 
 // 基础类型定义
-message PlayerInput {
-    uint32 player_id = 1;
-    bytes data = 2;
-    uint32 flag = 3;
-}
+message RelayData {
+    // 游戏每次调用 LockSteper::Input() 发包的时，会在数据里绑定一个单向增长的 id
+    // 当游戏发现 RelayData.SequenceId 不连续的时候，说明有丢包、或者乱序的情况发生
+    uint32 sequence_id = 1;
+    
+    // 在游戏过程中，LockStep Server分配给每个玩家的唯一标识，用于区分不同玩家的数据
+    // -1表示服务器插帧
+    uint32 player_id = 2;
 
-message FrameMetadata {
-    int64 timestamp = 1;
-    map<uint32, PlayerState> player_states = 2;
-    RoomState room_state = 3;
+    // 如果 RelayData.PlayerId == Self.PlayerId 时，才有意义
+    // 表示用户自已的上行包，从调用 LockSteper::Input() 到 LockStep 客户端收到这个包的总延时，单位ms
+    // 方便游戏收集用户输入延时
+    uint32 delay_ms = 3;
+
+    // “位域”标志。第0位：标识玩家是否在线。
+    // 1：在线 0：不在线。
+    // GameClient可以直接通过调用 IsPlayerOnline 这个函数判断玩家是否在线。其他位保留。
+    uint32 flag = 4;
+
+    // 游戏自定义的数据，一般都是每个玩家，调用 Input 接口所对应的数据。
+    bytes data = 5;
 }
 
 message Frame {
-    uint32 id = 1;
-    repeated PlayerInput inputs = 2;
-    FrameMetadata metadata = 3;
+    // 由LockStep Server生成的每一帧都有的唯一标识，从0开始递增。
+    uint32 frame_id = 1;
+
+    // 表示当前 Frame 的收包时刻，单位ms
+    // 方便游戏收集当前网络延时、抖动情况
+    uint32 recv_tick_ms = 2;
+
+    // 表示 FrameInfo.DataCollection 的可用长度，用于消除 GC
+    // 用法见ReadFrame接口说明
+    uint32 valid_data_count = 3;
+
+    // 上一帧到这一帧中间，服务器收集的用户输入，每一个RelayData表示一个用户发包
+    repeated RelayData DataCollection = 4;
 }
 
 message PlayerState {
@@ -40,12 +61,9 @@ message RoomState {
     uint32 current_frame_id = 6;
 }
 
-// 请求和响应消息
 message FrameRequest {
-    uint32 player_id = 1;
-    uint32 start_id = 2;
-    uint32 end_id = 3;
-    int64 timestamp = 4;
+    uint32 frame_id = 1;
+    uint32 count = 2;
 }
 
 message FrameResponse {
@@ -94,9 +112,27 @@ message LockStepMessage {
 
 // 输入消息
 message InputMessage {
-    uint32 frame_id = 1;
-    bytes data = 2;
-    uint32 flag = 3;
+    // 缺省为None。当用户的Input数据需要转发给GameSvr（对应LockStep Server的WatchRoom功能），可以将该参数置为Subscribe
+    enum InputFlag {
+        None = 0;
+        Subscribe = 0x01; // 当用户的Input数据需要转发给GameSvr
+        DuplicateUpstream = 0x10; // 上行冗余，只有在rawUdp参数为true的时候才有效
+    }
+
+    // 游戏每次调用 LockSteper::Input() 发包的时，会在数据里绑定一个单向增长的 id
+    // 当游戏发现 RelayData.SequenceId 不连续的时候，说明有丢包、或者乱序的情况发生
+    uint32 sequence_id = 1;
+
+    // 如果 RelayData.PlayerId == Self.PlayerId 时，才有意义
+    // 表示用户自已的上行包，从调用 LockSteper::Input() 到 LockStep 客户端收到这个包的总延时，单位ms
+    // 方便游戏收集用户输入延时
+    uint64 timestamp = 2;
+
+    // 游戏自定义数据
+    bytes data = 3;
+
+    // Input数据的控制标志，按bit位组合
+    InputFlag flag = 4;
 }
 
 // 游戏开始消息

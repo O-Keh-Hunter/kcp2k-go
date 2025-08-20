@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/O-Keh-Hunter/kcp2k-go/lockstep"
+	"google.golang.org/protobuf/proto"
 )
 
 // 全局 YAML 配置变量
@@ -39,9 +40,30 @@ type ClientMetrics struct {
 	TotalBytesSent      int64
 	ConnectionErrors    int64
 	InputErrors         int64
-	AverageLatency      int64 // 微秒
-	StartTime           time.Time
-	mutex               sync.RWMutex
+
+	// 从 LockStepClient 获取的详细统计信息
+	TotalFrames          int64
+	MissedFrames         int64
+	LateFrames           int64
+	TotalPackets         int64
+	LostPackets          int64
+	PacketLossRate       float64
+	AverageLatency       time.Duration
+	MaxLatency           time.Duration
+	MinLatency           time.Duration
+	AverageFrameTime     time.Duration
+	NetworkBytesReceived int64
+	NetworkBytesSent     int64
+
+	// 输入延时统计
+	InputLatencyCount   int64         // 输入延时样本数量
+	TotalInputLatency   time.Duration // 总输入延时
+	MaxInputLatency     time.Duration // 最大输入延时
+	MinInputLatency     time.Duration // 最小输入延时
+	AverageInputLatency time.Duration // 平均输入延时
+
+	StartTime time.Time
+	mutex     sync.RWMutex
 }
 
 // StressClient 压测客户端
@@ -133,6 +155,7 @@ func (sc *StressClient) run() {
 			atomic.AddInt64(&sc.metrics.ConnectionErrors, 1)
 			sc.logger.Printf("[Client %d] Error: %v", sc.id, err)
 		},
+		Logger: sc.logger, // 传递logger给LockStepClient
 	}
 
 	// 创建客户端
@@ -198,7 +221,7 @@ func (sc *StressClient) inputLoop() {
 	ticker := time.NewTicker(sc.config.UpstreamInterval) // 33ms间隔
 	defer ticker.Stop()
 
-	inputCounter := 0
+	inputCounter := uint32(0)
 	for {
 		select {
 		case <-ticker.C:
@@ -208,8 +231,6 @@ func (sc *StressClient) inputLoop() {
 
 			// 创建40字节的输入数据
 			inputCounter++
-			currentFrame := sc.client.GetCurrentFrameID()
-			nextFrame := currentFrame + 1
 
 			// 生成40字节的模拟输入数据
 			inputData := make([]byte, sc.config.InputPacketSize)
@@ -221,7 +242,7 @@ func (sc *StressClient) inputLoop() {
 				inputData[i] = byte(rand.Intn(256))
 			}
 
-			err := sc.client.SendInput(nextFrame, inputData)
+			err := sc.client.SendInput(inputData, lockstep.InputMessage_None)
 			if err != nil {
 				atomic.AddInt64(&sc.metrics.InputErrors, 1)
 			} else {
@@ -251,15 +272,62 @@ func (sc *StressClient) frameLoop() {
 			if frame != nil {
 				atomic.AddInt64(&sc.metrics.TotalFramesReceived, 1)
 				// 估算接收字节数
-				frameSize := int64(len(frame.Inputs) * 50) // 估算每个输入50字节
-				atomic.AddInt64(&sc.metrics.TotalBytesReceived, frameSize)
+				frameSize := 0
+				for i := 0; i < len(frame.DataCollection); i++ {
+					frameSize += proto.Size(frame.DataCollection[i])
+				}
+				atomic.AddInt64(&sc.metrics.TotalBytesReceived, int64(frameSize))
 
 				// 输出帧接收日志
-				// sc.logger.Printf("[Client %d] Received frame %d with %d inputs", sc.id, frame.Id, len(frame.Inputs))
+				// sc.logger.Printf("[Client %d] Received frame %d with %d inputs", sc.id, frame.FrameId, len(frame.DataCollection))
 			}
 		case <-sc.stopChan:
 			return
 		}
+	}
+}
+
+// collectDetailedStats 收集客户端的详细统计信息
+func (sc *StressClient) collectDetailedStats() {
+	if sc.client == nil {
+		return
+	}
+
+	// 获取帧统计信息
+	frameStats := sc.client.GetFrameStats()
+	if frameStats != nil {
+		atomic.StoreInt64(&sc.metrics.TotalFrames, int64(frameStats.GetTotalFrames()))
+		atomic.StoreInt64(&sc.metrics.MissedFrames, int64(frameStats.GetMissedFrames()))
+		atomic.StoreInt64(&sc.metrics.LateFrames, int64(frameStats.GetLateFrames()))
+		sc.metrics.mutex.Lock()
+		sc.metrics.AverageFrameTime = frameStats.GetAverageFrameTime()
+		sc.metrics.mutex.Unlock()
+	}
+
+	// 获取网络统计信息
+	networkStats := sc.client.GetNetworkStats()
+	if networkStats != nil {
+		atomic.StoreInt64(&sc.metrics.TotalPackets, int64(networkStats.GetTotalPackets()))
+		atomic.StoreInt64(&sc.metrics.LostPackets, int64(networkStats.GetLostPackets()))
+		atomic.StoreInt64(&sc.metrics.NetworkBytesReceived, int64(networkStats.GetBytesReceived()))
+		atomic.StoreInt64(&sc.metrics.NetworkBytesSent, int64(networkStats.GetBytesSent()))
+		sc.metrics.mutex.Lock()
+
+		sc.metrics.PacketLossRate = sc.client.GetPacketLossRate()
+		sc.metrics.AverageLatency = networkStats.GetAverageLatency()
+		sc.metrics.MaxLatency = networkStats.GetMaxLatency()
+		sc.metrics.MinLatency = networkStats.GetMinLatency()
+
+		sc.metrics.InputLatencyCount += int64(networkStats.GetInputLatencyCount())
+		sc.metrics.TotalInputLatency += networkStats.GetAverageInputLatency() * time.Duration(networkStats.GetInputLatencyCount())
+		if networkStats.GetMaxInputLatency() > sc.metrics.MaxInputLatency {
+			sc.metrics.MaxInputLatency = networkStats.GetMaxInputLatency()
+		}
+		if networkStats.GetMinInputLatency() < sc.metrics.MinInputLatency || sc.metrics.MinInputLatency == 0 {
+			sc.metrics.MinInputLatency = networkStats.GetMinInputLatency()
+		}
+
+		sc.metrics.mutex.Unlock()
 	}
 }
 
@@ -364,26 +432,65 @@ func main() {
 		ticker := time.NewTicker(5 * time.Second)
 		defer ticker.Stop()
 
-		for {
-			select {
-			case <-ticker.C:
-				metrics.mutex.RLock()
-				uptime := time.Since(metrics.StartTime)
-				var m runtime.MemStats
-				runtime.ReadMemStats(&m)
-
-				logger.Printf("[METRICS] Uptime: %v, Connected: %d, InputsSent: %d, FramesReceived: %d, Errors: %d/%d, Memory: %.2fMB, Goroutines: %d",
-					uptime.Round(time.Second),
-					metrics.ConnectedClients,
-					metrics.TotalInputsSent,
-					metrics.TotalFramesReceived,
-					metrics.ConnectionErrors,
-					metrics.InputErrors,
-					float64(m.Alloc)/1024/1024,
-					runtime.NumGoroutine(),
-				)
-				metrics.mutex.RUnlock()
+		for range ticker.C {
+			// 收集所有客户端的详细统计信息
+			for _, client := range clients {
+				if client != nil {
+					client.collectDetailedStats()
+				}
 			}
+
+			metrics.mutex.RLock()
+			uptime := time.Since(metrics.StartTime)
+			var m runtime.MemStats
+			runtime.ReadMemStats(&m)
+
+			// 计算平均输入延时
+			var avgInputLatency time.Duration
+			if metrics.InputLatencyCount > 0 {
+				avgInputLatency = metrics.TotalInputLatency / time.Duration(metrics.InputLatencyCount)
+				metrics.AverageInputLatency = avgInputLatency
+			}
+
+			// 基础统计信息
+			logger.Printf("[METRICS] Uptime: %v, Connected: %d, InputsSent: %d, FramesReceived: %d, Errors: %d/%d, Memory: %.2fMB, Goroutines: %d",
+				uptime.Round(time.Second),
+				metrics.ConnectedClients,
+				metrics.TotalInputsSent,
+				metrics.TotalFramesReceived,
+				metrics.ConnectionErrors,
+				metrics.InputErrors,
+				float64(m.Alloc)/1024/1024,
+				runtime.NumGoroutine(),
+			)
+
+			// 详细统计信息
+			logger.Printf("[DETAILED] TotalFrames: %d, MissedFrames: %d, LateFrames: %d, PacketLoss: %.2f%%, AvgLatency: %v, MaxLatency: %v, MinLatency: %v",
+				metrics.TotalFrames,
+				metrics.MissedFrames,
+				metrics.LateFrames,
+				metrics.PacketLossRate*100,
+				metrics.AverageLatency.Round(time.Millisecond),
+				metrics.MaxLatency.Round(time.Millisecond),
+				metrics.MinLatency.Round(time.Millisecond),
+			)
+
+			// 网络统计信息
+			logger.Printf("[NETWORK] NetworkBytesReceived: %d, NetworkBytesSent: %d, AvgFrameTime: %v",
+				metrics.NetworkBytesReceived,
+				metrics.NetworkBytesSent,
+				metrics.AverageFrameTime.Round(time.Microsecond),
+			)
+
+			// 输入延时统计信息
+			logger.Printf("[INPUT_LATENCY] Count: %d, Avg: %v, Max: %v, Min: %v",
+				metrics.InputLatencyCount,
+				avgInputLatency.Round(time.Millisecond),
+				metrics.MaxInputLatency.Round(time.Millisecond),
+				metrics.MinInputLatency.Round(time.Millisecond),
+			)
+
+			metrics.mutex.RUnlock()
 		}
 	}()
 
@@ -429,6 +536,13 @@ func main() {
 	// 等待所有客户端停止
 	wg.Wait()
 
+	// 最后一次收集详细统计信息
+	for _, client := range clients {
+		if client != nil {
+			client.collectDetailedStats()
+		}
+	}
+
 	// 输出最终统计
 	metrics.mutex.RLock()
 	totalTime := time.Since(metrics.StartTime)
@@ -439,9 +553,40 @@ func main() {
 	logger.Printf("[FINAL STATS] Total bytes received: %d", metrics.TotalBytesReceived)
 	logger.Printf("[FINAL STATS] Connection errors: %d", metrics.ConnectionErrors)
 	logger.Printf("[FINAL STATS] Input errors: %d", metrics.InputErrors)
+
+	// 详细的帧和网络统计
+	logger.Printf("[FINAL STATS] Total frames processed: %d", metrics.TotalFrames)
+	logger.Printf("[FINAL STATS] Missed frames: %d", metrics.MissedFrames)
+	logger.Printf("[FINAL STATS] Late frames: %d", metrics.LateFrames)
+	logger.Printf("[FINAL STATS] Total packets: %d", metrics.TotalPackets)
+	logger.Printf("[FINAL STATS] Lost packets: %d", metrics.LostPackets)
+	logger.Printf("[FINAL STATS] Packet loss rate: %.2f%%", metrics.PacketLossRate*100)
+	logger.Printf("[FINAL STATS] Average latency: %v", metrics.AverageLatency.Round(time.Millisecond))
+	logger.Printf("[FINAL STATS] Max latency: %v", metrics.MaxLatency.Round(time.Millisecond))
+	logger.Printf("[FINAL STATS] Min latency: %v", metrics.MinLatency.Round(time.Millisecond))
+	logger.Printf("[FINAL STATS] Average frame time: %v", metrics.AverageFrameTime.Round(time.Microsecond))
+	logger.Printf("[FINAL STATS] Network bytes received: %d", metrics.NetworkBytesReceived)
+	logger.Printf("[FINAL STATS] Network bytes sent: %d", metrics.NetworkBytesSent)
+
+	// 输入延时统计
+	logger.Printf("[FINAL STATS] Input latency samples: %d", metrics.InputLatencyCount)
+	// 计算平均输入延迟
+	if metrics.InputLatencyCount > 0 {
+		metrics.AverageInputLatency = metrics.TotalInputLatency / time.Duration(metrics.InputLatencyCount)
+	}
+	logger.Printf("[FINAL STATS] Average input latency: %v", metrics.AverageInputLatency.Round(time.Millisecond))
+	logger.Printf("[FINAL STATS] Max input latency: %v", metrics.MaxInputLatency.Round(time.Millisecond))
+	logger.Printf("[FINAL STATS] Min input latency: %v", metrics.MinInputLatency.Round(time.Millisecond))
+
 	if totalTime.Seconds() > 0 {
 		logger.Printf("[FINAL STATS] Input rate: %.2f inputs/sec", float64(metrics.TotalInputsSent)/totalTime.Seconds())
 		logger.Printf("[FINAL STATS] Frame rate: %.2f frames/sec", float64(metrics.TotalFramesReceived)/totalTime.Seconds())
+		if metrics.TotalFrames > 0 {
+			missedRate := float64(metrics.MissedFrames) / float64(metrics.TotalFrames) * 100
+			lateRate := float64(metrics.LateFrames) / float64(metrics.TotalFrames) * 100
+			logger.Printf("[FINAL STATS] Missed frame rate: %.2f%%", missedRate)
+			logger.Printf("[FINAL STATS] Late frame rate: %.2f%%", lateRate)
+		}
 	}
 	metrics.mutex.RUnlock()
 

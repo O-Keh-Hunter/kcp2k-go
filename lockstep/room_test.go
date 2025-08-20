@@ -152,7 +152,7 @@ func TestGetRoomMonitoringInfo_WithPlayers(t *testing.T) {
 			LastPingTime: time.Now().Unix(),
 		},
 		LastFrameID: 5,
-		InputBuffer: make(map[FrameID][]byte),
+		InputBuffer: make(map[FrameID]*InputMessage),
 	}
 
 	player2 := &Player{
@@ -165,7 +165,7 @@ func TestGetRoomMonitoringInfo_WithPlayers(t *testing.T) {
 			LastPingTime: time.Now().Unix() - 30,
 		},
 		LastFrameID: 3,
-		InputBuffer: make(map[FrameID][]byte),
+		InputBuffer: make(map[FrameID]*InputMessage),
 	}
 
 	// 添加玩家到房间
