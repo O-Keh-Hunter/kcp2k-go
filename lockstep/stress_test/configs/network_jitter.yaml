@@ -12,7 +12,7 @@ server:
 # 客户端配置 - 网络抖动测试
 client:
   total_clients: 3000     # 中等客户端数量
-  input_interval: 33
+  frame_rate: 30      # 客户端上行帧率 (fps)
   input_size: 40
   connect_timeout: 15     # 更长的超时以应对网络抖动
   reconnect_interval: 5

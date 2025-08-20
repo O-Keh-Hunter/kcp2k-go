@@ -269,8 +269,7 @@ func (rm *RoomManager) startRoom(room *Room, server *LockStepServer) {
 		for {
 			select {
 			case <-ticker.C:
-				room.KcpServer.TickIncoming()
-				room.KcpServer.TickOutgoing()
+				room.KcpServer.Tick()
 			case <-room.StopChan:
 				return
 			}

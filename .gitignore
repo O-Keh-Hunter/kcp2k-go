@@ -496,3 +496,5 @@ tests/stress_test/stress_test
 lockstep-server
 stress_client
 stress_server
+client
+server

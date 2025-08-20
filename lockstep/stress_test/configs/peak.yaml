@@ -12,7 +12,7 @@ server:
 # 客户端配置 - 峰值负载
 client:
   total_clients: 6000     # 超出正常负载20%
-  input_interval: 30      # 更高的帧率 (33帧/秒)
+  frame_rate: 30      # 客户端上行帧率 (fps)
   input_size: 50          # 更大的包 (25%增加)
   connect_timeout: 5      # 更短的超时
   reconnect_interval: 3   # 更频繁的重连

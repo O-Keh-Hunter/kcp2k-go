@@ -12,7 +12,7 @@ server:
 # 客户端配置 - 重连测试
 client:
   total_clients: 2000     # 减少客户端数量
-  input_interval: 33
+  frame_rate: 30      # 客户端上行帧率 (fps)
   input_size: 40
   connect_timeout: 8      # 更长的连接超时
   reconnect_interval: 2   # 快速重连

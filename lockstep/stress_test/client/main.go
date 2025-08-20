@@ -264,7 +264,7 @@ func (sc *StressClient) inputLoop() {
 
 // frameLoop 帧接收循环
 func (sc *StressClient) frameLoop() {
-	ticker := time.NewTicker(10 * time.Millisecond) // 每10ms检查一次
+	ticker := time.NewTicker(sc.config.UpstreamInterval)
 	defer ticker.Stop()
 
 	for {
@@ -360,7 +360,7 @@ func getDefaultConfig() ClientConfig {
 	return ClientConfig{
 		ServerAddr:       "127.0.0.1",
 		ServerPort:       8888,
-		ClientCount:      1000,
+		ClientCount:      100,
 		TestDuration:     30 * time.Minute,
 		UpstreamInterval: 33 * time.Millisecond, // 33ms上行间隔 (30帧/秒)
 		InputPacketSize:  40,                    // 40字节input包
@@ -409,7 +409,7 @@ func main() {
 		if testDuration, err := yamlConfig.GetTestDuration(); err == nil {
 			config.TestDuration = testDuration
 		}
-		config.UpstreamInterval = time.Duration(yamlConfig.Client.InputInterval) * time.Millisecond
+		config.UpstreamInterval = yamlConfig.GetInputInterval()
 		config.InputPacketSize = yamlConfig.Client.InputSize
 	}
 

@@ -32,7 +32,7 @@ func getDefaultConfig() StressTestConfig {
 		ServerAddr:     "127.0.0.1",
 		ServerPort:     8888,
 		MetricsPort:    8887,
-		RoomCount:      100,
+		RoomCount:      10,
 		PlayersPerRoom: 10,
 		FrameRate:      30, // 客户端上行30帧/秒
 		DownstreamRate: 15, // 服务端下行15帧/秒
@@ -162,7 +162,7 @@ func main() {
 
 	// 启动状态监控
 	go func() {
-		ticker := time.NewTicker(10 * time.Second)
+		ticker := time.NewTicker(5 * time.Second)
 		defer ticker.Stop()
 
 		for {

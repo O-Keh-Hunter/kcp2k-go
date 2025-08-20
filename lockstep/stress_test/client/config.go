@@ -29,7 +29,7 @@ type YamlServerConfig struct {
 // YamlClientConfig 客户端配置
 type YamlClientConfig struct {
 	TotalClients      int `yaml:"total_clients"`
-	InputInterval     int `yaml:"input_interval"`     // ms
+	FrameRate         int `yaml:"frame_rate"`         // fps
 	InputSize         int `yaml:"input_size"`         // bytes
 	ConnectTimeout    int `yaml:"connect_timeout"`    // seconds
 	ReconnectInterval int `yaml:"reconnect_interval"` // seconds
@@ -92,7 +92,10 @@ func (c *YamlConfig) GetCooldownDuration() (time.Duration, error) {
 
 // GetInputInterval 获取输入间隔
 func (c *YamlConfig) GetInputInterval() time.Duration {
-	return time.Duration(c.Client.InputInterval) * time.Millisecond
+	if c.Client.FrameRate <= 0 {
+		return 33 * time.Millisecond // 默认30fps
+	}
+	return time.Duration(1000/c.Client.FrameRate) * time.Millisecond
 }
 
 // Validate 验证配置的有效性
@@ -115,8 +118,8 @@ func (c *YamlConfig) Validate() error {
 	if c.Client.TotalClients <= 0 {
 		return fmt.Errorf("total clients must be positive")
 	}
-	if c.Client.InputInterval <= 0 {
-		return fmt.Errorf("input interval must be positive")
+	if c.Client.FrameRate <= 0 {
+		return fmt.Errorf("frame rate must be positive")
 	}
 	if c.Client.InputSize <= 0 {
 		return fmt.Errorf("input size must be positive")
