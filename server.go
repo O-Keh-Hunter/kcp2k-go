@@ -83,19 +83,28 @@ func (s *KcpServer) Stop() {
 }
 
 func (s *KcpServer) Send(connectionId int, data []byte, channel KcpChannel) {
-	if c, ok := s.connections[connectionId]; ok {
+	s.mu.RLock()
+	c, ok := s.connections[connectionId]
+	s.mu.RUnlock()
+	if ok {
 		c.Send(data, channel)
 	}
 }
 
 func (s *KcpServer) Disconnect(connectionId int) {
-	if c, ok := s.connections[connectionId]; ok {
+	s.mu.RLock()
+	c, ok := s.connections[connectionId]
+	s.mu.RUnlock()
+	if ok {
 		c.Disconnect()
 	}
 }
 
 func (s *KcpServer) GetClientEndPoint(connectionId int) *net.UDPAddr {
-	if c, ok := s.connections[connectionId]; ok {
+	s.mu.RLock()
+	c, ok := s.connections[connectionId]
+	s.mu.RUnlock()
+	if ok {
 		return c.RemoteAddr()
 	}
 	return nil
@@ -151,14 +160,23 @@ func (s *KcpServer) TickIncoming() {
 		s.processMessage(seg, remote)
 	}
 	// tick all connections
+	s.mu.RLock()
+	connections := make([]*KcpServerConnection, 0, len(s.connections))
 	for _, c := range s.connections {
+		connections = append(connections, c)
+	}
+	s.mu.RUnlock()
+
+	for _, c := range connections {
 		c.TickIncoming()
 	}
 	// remove disconnected
+	s.mu.Lock()
 	for id := range s.toRemove {
 		delete(s.connections, id)
 	}
 	s.toRemove = make(map[int]struct{})
+	s.mu.Unlock()
 }
 
 // TickOutgoing: flush all connections
@@ -209,7 +227,10 @@ func (s *KcpServer) createServerSocket(dual bool, port uint16) (*net.UDPConn, er
 
 func (s *KcpServer) processMessage(segment []byte, remote *net.UDPAddr) {
 	id := ConnectionHash(remote)
-	if c, ok := s.connections[id]; ok {
+	s.mu.RLock()
+	c, ok := s.connections[id]
+	s.mu.RUnlock()
+	if ok {
 		c.RawInput(segment)
 		return
 	}
@@ -227,7 +248,9 @@ func (s *KcpServer) createConnection(connectionId int, remote *net.UDPAddr) *Kcp
 	onConnected := func(conn *KcpServerConnection) {
 		Log.Debug("[KCP] Server: OnConnected connectionId: %d", connectionId)
 		// add to map
+		s.mu.Lock()
 		s.connections[connectionId] = conn
+		s.mu.Unlock()
 
 		// fire user callback
 		if s.onConnected != nil {
@@ -242,7 +265,9 @@ func (s *KcpServer) createConnection(connectionId int, remote *net.UDPAddr) *Kcp
 	onDisconnected := func() {
 		Log.Debug("[KCP] Server: OnDisconnected connectionId: %d", connectionId)
 		// schedule removal
+		s.mu.Lock()
 		s.toRemove[connectionId] = struct{}{}
+		s.mu.Unlock()
 
 		if s.onDisconnected != nil {
 			s.onDisconnected(connectionId)
