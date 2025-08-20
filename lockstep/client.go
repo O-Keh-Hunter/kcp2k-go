@@ -40,8 +40,8 @@ type LockStepClient struct {
 	// 本地输入序列号
 	nextSequenceID uint32
 
-	// 序列号跟踪（用于丢包检测）
-	lastReceivedSeqID uint32 // 自己最后接收到的SequenceId
+	// 序列号跟踪（用于丢包检测）- 只记录自己的序列号
+	lastSeqID uint32 // 最后接收到的自己的SequenceId
 
 	// 初始化统计信息
 	FrameStats   *FrameStats
@@ -93,8 +93,8 @@ func NewLockStepClient(config *LockStepConfig, playerID PlayerID, callbacks Clie
 
 		onErrorCallback: callbacks.OnError,
 		nextSequenceID:  0, // 初始化nextSequenceID
-		// 初始化丢包统计
-		lastReceivedSeqID: 0,
+		// 初始化序列号跟踪器
+		lastSeqID: 0,
 		// 初始化统计信息
 		FrameStats:   &FrameStats{},
 		NetworkStats: &NetworkStats{},
@@ -266,28 +266,6 @@ func (c *LockStepClient) RequestFrames(startFrameID, count uint32) error {
 	return nil
 }
 
-// SendPing 发送Ping消息
-func (c *LockStepClient) SendPing() error {
-	c.mutex.Lock()
-	defer c.mutex.Unlock()
-
-	if !c.connected {
-		return fmt.Errorf("client is not connected")
-	}
-
-	pingMsg := PingMessage{
-		Timestamp: time.Now().UnixMilli(),
-	}
-	pingPayload, _ := proto.Marshal(&pingMsg)
-	lockStepMsg := &LockStepMessage{
-		Type:    LockStepMessage_PING,
-		Payload: pingPayload,
-	}
-
-	c.sendMessage(lockStepMsg, kcp2k.KcpUnreliable)
-	return nil
-}
-
 // sendMessage 发送消息
 func (c *LockStepClient) sendMessage(msg *LockStepMessage, channel kcp2k.KcpChannel) {
 	msgData, err := proto.Marshal(msg)
@@ -298,8 +276,11 @@ func (c *LockStepClient) sendMessage(msg *LockStepMessage, channel kcp2k.KcpChan
 
 	c.kcpClient.Send(msgData, channel)
 
+	// 获取当前RTT作为网络延迟
+	rtt := c.GetRTT()
+
 	// 更新网络统计信息（发送数据）
-	c.IncrementNetworkStats(0, 1, 0, uint64(len(msgData)), false, 0)
+	c.IncrementNetworkStats(0, 1, 0, uint64(len(msgData)), false, rtt)
 }
 
 // startFrameProcessing 开始帧处理
@@ -308,26 +289,6 @@ func (c *LockStepClient) startFrameProcessing() {
 	c.running = true
 	c.stopChan = make(chan struct{})
 	c.mutex.Unlock()
-
-	// 只启动ping处理协程，移除frameProcessor
-	go c.pingProcessor()
-}
-
-// pingProcessor Ping处理协程
-func (c *LockStepClient) pingProcessor() {
-	ticker := time.NewTicker(time.Second * 2) // 2秒发送一次Ping
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-ticker.C:
-			if c.connected {
-				c.SendPing()
-			}
-		case <-c.stopChan:
-			return
-		}
-	}
 }
 
 // KCP回调函数
@@ -390,8 +351,6 @@ func (c *LockStepClient) handleMessage(msg *LockStepMessage) {
 		c.handleFrameResponse(msg.Payload)
 	case LockStepMessage_START:
 		c.handleGameStart(msg.Payload)
-	case LockStepMessage_PONG:
-		c.handlePong(msg.Payload)
 	case LockStepMessage_PLAYER_STATE:
 		c.handlePlayerState(msg.Payload)
 	case LockStepMessage_ROOM_STATE:
@@ -430,6 +389,7 @@ func (c *LockStepClient) handleFrame(payload []byte) {
 	}
 
 	// 检测丢包：遍历帧中的RelayData，检查SequenceId连续性
+	packetLossDetected := false
 	for _, relayData := range frame.DataCollection {
 		playerID := PlayerID(relayData.PlayerId)
 		sequenceID := relayData.SequenceId
@@ -442,16 +402,32 @@ func (c *LockStepClient) handleFrame(payload []byte) {
 			inputLatency := time.Duration(relayData.DelayMs) * time.Millisecond
 			c.IncrementInputLatencyStats(inputLatency)
 
-			// 检查序列号连续性（只对第一个包之后进行检查）
-			if c.lastReceivedSeqID > 0 {
-				expected := c.lastReceivedSeqID + 1
-				if sequenceID > expected {
-					c.IncrementNetworkStats(0, 0, 0, 0, true, 0)
+			// 改进的丢包检测逻辑 - 只跟踪自己的序列号
+			if c.lastSeqID > 0 {
+				// 检查序列号跳跃（考虑可能的乱序）
+				if sequenceID > c.lastSeqID {
+					// 检查是否有序列号跳跃（丢包）
+					gap := sequenceID - c.lastSeqID
+					if gap > 1 {
+						// 检测到丢包，记录丢失的包数
+						packetLossDetected = true
+						c.logger.Printf("Packet loss detected: expected seq %d, got %d, gap: %d",
+							c.lastSeqID+1, sequenceID, gap-1)
+					}
+					// 更新最后接收序列号
+					c.lastSeqID = sequenceID
+				} else if sequenceID < c.lastSeqID {
+					// 收到乱序包，记录但不更新序列号
+					c.logger.Printf("Out-of-order packet received: seq %d, expected > %d",
+						sequenceID, c.lastSeqID)
+				} else {
+					// sequenceID == lastSeqID，重复包，忽略
+					c.logger.Printf("Duplicate packet received: seq %d", sequenceID)
 				}
+			} else {
+				// 第一次收到自己的包，直接记录
+				c.lastSeqID = sequenceID
 			}
-
-			// 更新最后接收到的序列号
-			c.lastReceivedSeqID = sequenceID
 		}
 	}
 
@@ -461,7 +437,13 @@ func (c *LockStepClient) handleFrame(payload []byte) {
 	frameDuration := time.Since(frameStartTime)
 	c.IncrementFrameStats(false, false, frameDuration)
 
-	// 更新网络统计信息（接收到帧数据）
+	// 更新网络统计信息
+	if packetLossDetected {
+		// 检测到丢包时记录网络延迟和丢包统计
+		rtt := c.GetRTT()
+		c.IncrementNetworkStats(0, 0, 0, 0, true, rtt)
+	}
+	// 更新网络统计信息（接收到帧数据），不重复记录RTT
 	c.IncrementNetworkStats(1, 0, uint64(len(payload)), 0, false, 0)
 }
 
@@ -537,23 +519,6 @@ func (c *LockStepClient) handleGameStart(payload []byte) {
 	if c.onGameStarted != nil {
 		c.onGameStarted()
 	}
-}
-
-// handlePong 处理Pong消息
-func (c *LockStepClient) handlePong(payload []byte) {
-	var pongMsg PongMessage
-	err := proto.Unmarshal(payload, &pongMsg)
-	if err != nil {
-		return
-	}
-
-	// latency := time.Now().UnixMilli() - pongMsg.Timestamp
-	// c.logger.Printf("Ping: %dms", latency)
-	latency := time.Duration(time.Now().UnixMilli()-pongMsg.Timestamp) * time.Millisecond
-	// c.logger.Printf("Ping: %dms", latency.Milliseconds())
-
-	// 更新网络统计信息（延迟信息）
-	c.IncrementNetworkStats(1, 0, uint64(len(payload)), 0, false, latency)
 }
 
 // handlePlayerState 处理玩家状态
@@ -759,7 +724,8 @@ func (c *LockStepClient) GetPacketLossStats() (sentPackets, receivedPackets, los
 
 // ResetPacketLossStats 重置丢包统计
 func (c *LockStepClient) ResetPacketLossStats() {
-	c.lastReceivedSeqID = 0
+	// 重置序列号跟踪
+	c.lastSeqID = 0
 	// 重置网络统计
 	if c.NetworkStats != nil {
 		c.NetworkStats.Reset()
@@ -780,19 +746,20 @@ func (c *LockStepClient) GetNetworkStats() *NetworkStats {
 	return c.NetworkStats
 }
 
-// UpdateFrameStats 更新帧统计信息
-func (c *LockStepClient) UpdateFrameStats(totalFrames, missedFrames, lateFrames uint64, frameTimeSum time.Duration, lastFrameTime time.Time) {
-	c.FrameStats.UpdateFrameStats(totalFrames, missedFrames, lateFrames, frameTimeSum, lastFrameTime)
+// GetRTT 获取KCP连接的RTT（往返时间）
+func (c *LockStepClient) GetRTT() time.Duration {
+	if c.kcpClient == nil {
+		return 0
+	}
+
+	// KCP的GetRTT返回毫秒数，转换为time.Duration
+	rttMs := c.kcpClient.GetRTT()
+	return time.Duration(rttMs) * time.Millisecond
 }
 
 // IncrementFrameStats 增量更新帧统计信息
 func (c *LockStepClient) IncrementFrameStats(missed, late bool, frameDuration time.Duration) {
 	c.FrameStats.IncrementFrameStats(missed, late, frameDuration)
-}
-
-// UpdateNetworkStats 更新网络统计信息
-func (c *LockStepClient) UpdateNetworkStats(totalPackets, lostPackets, bytesReceived, bytesSent uint64, latency time.Duration) {
-	c.NetworkStats.UpdateNetworkStats(totalPackets, lostPackets, bytesReceived, bytesSent, latency)
 }
 
 // IncrementNetworkStats 增量更新网络统计信息
@@ -820,6 +787,7 @@ func (c *LockStepClient) GetClientStats() map[string]interface{} {
 		"current_frame":    c.currentFrameID,
 		"last_frame":       c.lastFrameID,
 		"packet_loss_rate": c.GetPacketLossRate(),
+		"rtt":              c.GetRTT().String(),
 	}
 
 	// 添加帧统计信息
@@ -839,9 +807,9 @@ func (c *LockStepClient) GetClientStats() map[string]interface{} {
 			"lost_packets":          networkStats.GetLostPackets(),
 			"bytes_received":        networkStats.GetBytesReceived(),
 			"bytes_sent":            networkStats.GetBytesSent(),
-			"average_latency":       networkStats.GetAverageLatency().String(),
-			"max_latency":           networkStats.GetMaxLatency().String(),
-			"min_latency":           networkStats.GetMinLatency().String(),
+			"average_rtt":           networkStats.GetAverageRTT().String(),
+			"max_rtt":               networkStats.GetMaxRTT().String(),
+			"min_rtt":               networkStats.GetMinRTT().String(),
 			"input_latency_count":   networkStats.GetInputLatencyCount(),
 			"average_input_latency": networkStats.GetAverageInputLatency().String(),
 			"max_input_latency":     networkStats.GetMaxInputLatency().String(),

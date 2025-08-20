@@ -7,16 +7,17 @@ import (
 
 // NetworkStats 网络统计信息
 type NetworkStats struct {
+	// 网络包统计
 	totalPackets  uint64
 	lostPackets   uint64
 	bytesReceived uint64
 	bytesSent     uint64
 
-	// 网络延迟统计
-	latencySum   time.Duration
-	latencyCount uint64
-	maxLatency   time.Duration
-	minLatency   time.Duration
+	// 网络 RTT 统计
+	rttSum   time.Duration
+	rttCount uint64
+	maxRTT   time.Duration
+	minRTT   time.Duration
 
 	// 输入延时统计
 	inputLatencySum   time.Duration
@@ -48,28 +49,42 @@ func (ns *NetworkStats) GetLostPackets() uint64 {
 	return ns.lostPackets
 }
 
-// GetAverageLatency 获取平均延迟
-func (ns *NetworkStats) GetAverageLatency() time.Duration {
+// GetAverageRTT 获取平均RTT
+func (ns *NetworkStats) GetAverageRTT() time.Duration {
 	ns.mutex.RLock()
 	defer ns.mutex.RUnlock()
-	if ns.latencyCount == 0 {
+	if ns.rttCount == 0 {
 		return 0
 	}
-	return ns.latencySum / time.Duration(ns.latencyCount)
+	return ns.rttSum / time.Duration(ns.rttCount)
 }
 
-// GetMaxLatency 获取最大延迟
-func (ns *NetworkStats) GetMaxLatency() time.Duration {
+// GetTotalRTT 获取总RTT
+func (ns *NetworkStats) GetTotalRTT() time.Duration {
 	ns.mutex.RLock()
 	defer ns.mutex.RUnlock()
-	return ns.maxLatency
+	return ns.rttSum
 }
 
-// GetMinLatency 获取最小延迟
-func (ns *NetworkStats) GetMinLatency() time.Duration {
+// GetRTTCount 获取RTT样本数量
+func (ns *NetworkStats) GetRTTCount() uint64 {
 	ns.mutex.RLock()
 	defer ns.mutex.RUnlock()
-	return ns.minLatency
+	return ns.rttCount
+}
+
+// GetMaxRTT 获取最大RTT
+func (ns *NetworkStats) GetMaxRTT() time.Duration {
+	ns.mutex.RLock()
+	defer ns.mutex.RUnlock()
+	return ns.maxRTT
+}
+
+// GetMinRTT 获取最小RTT
+func (ns *NetworkStats) GetMinRTT() time.Duration {
+	ns.mutex.RLock()
+	defer ns.mutex.RUnlock()
+	return ns.minRTT
 }
 
 // GetBytesReceived 获取接收字节数
@@ -126,13 +141,13 @@ func (ns *NetworkStats) UpdateNetworkStats(totalPackets, lostPackets, bytesRecei
 	ns.bytesReceived = bytesReceived
 	ns.bytesSent = bytesSent
 	if latency > 0 {
-		ns.latencySum += latency
-		ns.latencyCount++
-		if latency > ns.maxLatency {
-			ns.maxLatency = latency
+		ns.rttSum += latency
+		ns.rttCount++
+		if latency > ns.maxRTT {
+			ns.maxRTT = latency
 		}
-		if latency < ns.minLatency || ns.minLatency == 0 {
-			ns.minLatency = latency
+		if latency < ns.minRTT || ns.minRTT == 0 {
+			ns.minRTT = latency
 		}
 	}
 }
@@ -148,13 +163,13 @@ func (ns *NetworkStats) IncrementNetworkStats(packetsReceived, packetsSent, byte
 	ns.bytesReceived += bytesReceived
 	ns.bytesSent += bytesSent
 	if latency > 0 {
-		ns.latencySum += latency
-		ns.latencyCount++
-		if latency > ns.maxLatency {
-			ns.maxLatency = latency
+		ns.rttSum += latency
+		ns.rttCount++
+		if latency > ns.maxRTT {
+			ns.maxRTT = latency
 		}
-		if latency < ns.minLatency || ns.minLatency == 0 {
-			ns.minLatency = latency
+		if latency < ns.minRTT || ns.minRTT == 0 {
+			ns.minRTT = latency
 		}
 	}
 }
@@ -248,10 +263,10 @@ func (ns *NetworkStats) Reset() {
 	ns.bytesReceived = 0
 	ns.bytesSent = 0
 
-	ns.latencySum = 0
-	ns.latencyCount = 0
-	ns.maxLatency = 0
-	ns.minLatency = 0
+	ns.rttSum = 0
+	ns.rttCount = 0
+	ns.maxRTT = 0
+	ns.minRTT = 0
 
 	ns.inputLatencySum = 0
 	ns.inputLatencyCount = 0

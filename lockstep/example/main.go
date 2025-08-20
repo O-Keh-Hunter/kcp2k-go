@@ -245,9 +245,9 @@ func runClient() {
 				if client.NetworkStats != nil {
 					totalPackets := client.NetworkStats.GetTotalPackets()
 					lostPackets := client.NetworkStats.GetLostPackets()
-					avgLatency := client.NetworkStats.GetAverageLatency()
-					maxLatency := client.NetworkStats.GetMaxLatency()
-					minLatency := client.NetworkStats.GetMinLatency()
+					avgRtt := client.NetworkStats.GetAverageRTT()
+					maxRtt := client.NetworkStats.GetMaxRTT()
+					minRtt := client.NetworkStats.GetMinRTT()
 					bytesReceived := client.NetworkStats.GetBytesReceived()
 					bytesSent := client.NetworkStats.GetBytesSent()
 
@@ -263,8 +263,8 @@ func runClient() {
 
 					log.Printf("[Player %d] NetworkStats - Packets: Total=%d packets, Lost=%d packets, Bytes: Recv=%d bytes, Sent=%d bytes",
 						playerID, totalPackets, lostPackets, bytesReceived, bytesSent)
-					log.Printf("[Player %d] NetworkStats - Latency: Avg=%dms, Max=%dms, Min=%dms",
-						playerID, avgLatency.Milliseconds(), maxLatency.Milliseconds(), minLatency.Milliseconds())
+					log.Printf("[Player %d] NetworkStats - RTT: Avg=%dms, Max=%dms, Min=%dms",
+						playerID, avgRtt.Milliseconds(), maxRtt.Milliseconds(), minRtt.Milliseconds())
 					log.Printf("[Player %d] NetworkStats - InputLatency: Count=%d, Avg=%dms, Max=%dms, Min=%dms",
 						playerID, inputLatencyCount, avgInputLatency.Milliseconds(), maxInputLatency.Milliseconds(), minInputLatency.Milliseconds())
 					log.Printf("[Player %d] NetworkStats - Jitter: Count=%d, Avg=%dms, Max=%dms, Min=%dms",
@@ -290,23 +290,6 @@ func runClient() {
 					if frame != nil {
 						// log.Printf("[Player %d] PopFrame got frame %d with %d inputs", playerID, frame.FrameId, len(frame.DataCollection))
 					}
-				}
-			case <-sigChan:
-				return
-			}
-		}
-	}()
-
-	// 启动Ping测试
-	go func() {
-		ticker := time.NewTicker(time.Second * 2)
-		defer ticker.Stop()
-
-		for {
-			select {
-			case <-ticker.C:
-				if client.IsConnected() {
-					client.SendPing()
 				}
 			case <-sigChan:
 				return

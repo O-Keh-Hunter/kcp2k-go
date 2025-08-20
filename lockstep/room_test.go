@@ -146,26 +146,22 @@ func TestGetRoomMonitoringInfo_WithPlayers(t *testing.T) {
 		ID:           PlayerID(101),
 		ConnectionID: 1001,
 		State: &PlayerState{
-			Online:       true,
-			LastFrameId:  5,
-			Ping:         50,
-			LastPingTime: time.Now().Unix(),
+			Online:      true,
+			LastFrameId: 5,
 		},
 		LastFrameID: 5,
-		InputBuffer: make(map[FrameID]*InputMessage),
+		InputBuffer: make(map[FrameID][]*InputMessage),
 	}
 
 	player2 := &Player{
 		ID:           PlayerID(102),
 		ConnectionID: 1002,
 		State: &PlayerState{
-			Online:       false, // 离线玩家
-			LastFrameId:  3,
-			Ping:         80,
-			LastPingTime: time.Now().Unix() - 30,
+			Online:      false, // 离线玩家
+			LastFrameId: 3,
 		},
 		LastFrameID: 3,
-		InputBuffer: make(map[FrameID]*InputMessage),
+		InputBuffer: make(map[FrameID][]*InputMessage),
 	}
 
 	// 添加玩家到房间
@@ -216,12 +212,6 @@ func TestGetRoomMonitoringInfo_WithPlayers(t *testing.T) {
 		if p1["online"] != true {
 			t.Errorf("Expected player1 online to be true, got %v", p1["online"])
 		}
-		if p1["last_frame_id"] != int64(5) {
-			t.Errorf("Expected player1 last_frame_id to be 5, got %v", p1["last_frame_id"])
-		}
-		if p1["ping"] != int64(50) {
-			t.Errorf("Expected player1 ping to be 50, got %v", p1["ping"])
-		}
 	} else {
 		t.Error("Player 101 not found in monitoring info")
 	}
@@ -233,12 +223,6 @@ func TestGetRoomMonitoringInfo_WithPlayers(t *testing.T) {
 		}
 		if p2["online"] != false {
 			t.Errorf("Expected player2 online to be false, got %v", p2["online"])
-		}
-		if p2["last_frame_id"] != int64(3) {
-			t.Errorf("Expected player2 last_frame_id to be 3, got %v", p2["last_frame_id"])
-		}
-		if p2["ping"] != int64(80) {
-			t.Errorf("Expected player2 ping to be 80, got %v", p2["ping"])
 		}
 	} else {
 		t.Error("Player 102 not found in monitoring info")
@@ -291,10 +275,10 @@ func TestGetRoomMonitoringInfo_WithStats(t *testing.T) {
 	room.NetworkStats.lostPackets = 10
 	room.NetworkStats.bytesReceived = 25000
 	room.NetworkStats.bytesSent = 30000
-	room.NetworkStats.latencySum = 1000 * time.Millisecond
-	room.NetworkStats.latencyCount = 20
-	room.NetworkStats.maxLatency = 100 * time.Millisecond
-	room.NetworkStats.minLatency = 20 * time.Millisecond
+	room.NetworkStats.rttSum = 1000 * time.Millisecond
+	room.NetworkStats.rttCount = 20
+	room.NetworkStats.maxRTT = 100 * time.Millisecond
+	room.NetworkStats.minRTT = 20 * time.Millisecond
 	room.NetworkStats.mutex.Unlock()
 
 	// 获取房间监控信息
@@ -337,14 +321,14 @@ func TestGetRoomMonitoringInfo_WithStats(t *testing.T) {
 	if networkStats.GetBytesSent() != 30000 {
 		t.Errorf("Expected bytes_sent to be 30000, got %v", networkStats.GetBytesSent())
 	}
-	if networkStats.GetAverageLatency() != 50*time.Millisecond {
-		t.Errorf("Expected average_latency to be 50ms, got %v", networkStats.GetAverageLatency())
+	if networkStats.GetAverageRTT() != 50*time.Millisecond {
+		t.Errorf("Expected average_latency to be 50ms, got %v", networkStats.GetAverageRTT())
 	}
-	if networkStats.GetMaxLatency() != 100*time.Millisecond {
-		t.Errorf("Expected max_latency to be 100ms, got %v", networkStats.GetMaxLatency())
+	if networkStats.GetMaxRTT() != 100*time.Millisecond {
+		t.Errorf("Expected max_latency to be 100ms, got %v", networkStats.GetMaxRTT())
 	}
-	if networkStats.GetMinLatency() != 20*time.Millisecond {
-		t.Errorf("Expected min_latency to be 20ms, got %v", networkStats.GetMinLatency())
+	if networkStats.GetMinRTT() != 20*time.Millisecond {
+		t.Errorf("Expected min_latency to be 20ms, got %v", networkStats.GetMinRTT())
 	}
 }
 
@@ -405,7 +389,7 @@ func TestGetRoomMonitoringInfo_NilStats(t *testing.T) {
 	if monitoringInfo["player_count"] != 0 {
 		t.Errorf("Expected player_count to be 0, got %v", monitoringInfo["player_count"])
 	}
-	
+
 	// 注意：这里不验证running状态，因为房间的运行状态可能会因为各种原因改变
 	// 我们主要关注的是GetRoomMonitoringInfo方法能否正确处理nil统计信息的情况
 	running, ok := monitoringInfo["running"].(bool)

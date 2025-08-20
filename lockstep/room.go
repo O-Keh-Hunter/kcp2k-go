@@ -203,7 +203,7 @@ func (rm *RoomManager) JoinRoom(roomID RoomID, playerID PlayerID, connectionID i
 			Online: true,
 		},
 		LastFrameID: 0, // 初始设置为0，后面会根据游戏状态调整
-		InputBuffer: make(map[FrameID]*InputMessage),
+		InputBuffer:  make(map[FrameID][]*InputMessage),
 		Mutex:       sync.RWMutex{},
 	}
 
@@ -542,8 +542,6 @@ func (r *Room) GetRoomMonitoringInfo() map[string]interface{} {
 		if player.State != nil {
 			playerInfo["online"] = player.State.Online
 			playerInfo["last_frame_id"] = player.State.LastFrameId
-			playerInfo["ping"] = player.State.Ping
-			playerInfo["last_ping_time"] = player.State.LastPingTime
 		}
 		players = append(players, playerInfo)
 	}

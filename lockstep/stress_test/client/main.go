@@ -8,13 +8,13 @@ import (
 	"os"
 	"os/signal"
 	"runtime"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"syscall"
 	"time"
 
 	"github.com/O-Keh-Hunter/kcp2k-go/lockstep"
-	"google.golang.org/protobuf/proto"
 )
 
 // 全局 YAML 配置变量
@@ -33,42 +33,47 @@ type ClientConfig struct {
 
 // ClientMetrics 客户端性能指标
 type ClientMetrics struct {
-	ConnectedClients    int64
-	TotalInputsSent     int64
-	TotalFramesReceived int64
-	TotalBytesReceived  int64
-	TotalBytesSent      int64
-	ConnectionErrors    int64
-	InputErrors         int64
+	// === 连接统计 ===
+	ConnectedClients int64
+	ConnectionErrors int64
+	InputErrors      int64
 
-	// 从 LockStepClient 获取的详细统计信息
-	TotalFrames          int64
-	MissedFrames         int64
-	LateFrames           int64
-	TotalPackets         int64
-	LostPackets          int64
-	PacketLossRate       float64
-	AverageLatency       time.Duration
-	MaxLatency           time.Duration
-	MinLatency           time.Duration
-	AverageFrameTime     time.Duration
-	NetworkBytesReceived int64
-	NetworkBytesSent     int64
+	// === 帧统计 ===
+	TotalFrames         int64         // 总帧数
+	MissedFrames        int64         // 丢失帧数
+	LateFrames          int64         // 延迟帧数
+	AverageFrameTime    time.Duration // 平均帧时间
+	TotalFramesReceived int64         // 总接收帧数
 
-	// 输入延时统计
+	// === 网络包统计 ===
+	TotalPackets   uint64
+	LostPackets    uint64
+	BytesReceived  uint64
+	BytesSent      uint64
+	PacketLossRate float64
+
+	// === RTT 延迟统计 ===
+	RTTCount   int64         // RTT 样本数量
+	TotalRTT   time.Duration // 总 RTT
+	AverageRTT time.Duration // 平均 RTT
+	MaxRTT     time.Duration // 最大 RTT
+	MinRTT     time.Duration // 最小 RTT
+
+	// === 输入延迟统计 ===
 	InputLatencyCount   int64         // 输入延时样本数量
 	TotalInputLatency   time.Duration // 总输入延时
 	MaxInputLatency     time.Duration // 最大输入延时
 	MinInputLatency     time.Duration // 最小输入延时
 	AverageInputLatency time.Duration // 平均输入延时
 
-	// Jitter统计
+	// === Jitter 抖动统计 ===
 	JitterCount   int64         // Jitter样本数量
 	TotalJitter   time.Duration // 总Jitter时间
 	MaxJitter     time.Duration // 最大Jitter
 	MinJitter     time.Duration // 最小Jitter
 	AverageJitter time.Duration // 平均Jitter
 
+	// === 时间统计 ===
 	StartTime time.Time
 	mutex     sync.RWMutex
 }
@@ -252,9 +257,6 @@ func (sc *StressClient) inputLoop() {
 			err := sc.client.SendInput(inputData, lockstep.InputMessage_None)
 			if err != nil {
 				atomic.AddInt64(&sc.metrics.InputErrors, 1)
-			} else {
-				atomic.AddInt64(&sc.metrics.TotalInputsSent, 1)
-				atomic.AddInt64(&sc.metrics.TotalBytesSent, int64(len(inputData)))
 			}
 		case <-sc.stopChan:
 			return
@@ -277,14 +279,6 @@ func (sc *StressClient) frameLoop() {
 			// 使用PopFrame接口获取帧数据
 			frame := sc.client.PopFrame()
 			if frame != nil {
-				atomic.AddInt64(&sc.metrics.TotalFramesReceived, 1)
-				// 估算接收字节数
-				frameSize := 0
-				for i := 0; i < len(frame.DataCollection); i++ {
-					frameSize += proto.Size(frame.DataCollection[i])
-				}
-				atomic.AddInt64(&sc.metrics.TotalBytesReceived, int64(frameSize))
-
 				// 输出帧接收日志
 				// sc.logger.Printf("[Client %d] Received frame %d with %d inputs", sc.id, frame.FrameId, len(frame.DataCollection))
 			}
@@ -300,39 +294,66 @@ func (sc *StressClient) collectDetailedStats() {
 		return
 	}
 
-	// 获取帧统计信息
+	// === 收集帧统计信息 ===
 	frameStats := sc.client.GetFrameStats()
 	if frameStats != nil {
 		atomic.StoreInt64(&sc.metrics.TotalFrames, int64(frameStats.GetTotalFrames()))
 		atomic.StoreInt64(&sc.metrics.MissedFrames, int64(frameStats.GetMissedFrames()))
 		atomic.StoreInt64(&sc.metrics.LateFrames, int64(frameStats.GetLateFrames()))
+		// 设置总接收帧数（与总帧数相同）
+		atomic.StoreInt64(&sc.metrics.TotalFramesReceived, int64(frameStats.GetTotalFrames()))
 		sc.metrics.mutex.Lock()
 		sc.metrics.AverageFrameTime = frameStats.GetAverageFrameTime()
 		sc.metrics.mutex.Unlock()
 	}
 
-	// 获取网络统计信息
+	// === 收集网络统计信息 ===
 	networkStats := sc.client.GetNetworkStats()
 	if networkStats != nil {
-		atomic.StoreInt64(&sc.metrics.TotalPackets, int64(networkStats.GetTotalPackets()))
-		atomic.StoreInt64(&sc.metrics.LostPackets, int64(networkStats.GetLostPackets()))
-		atomic.StoreInt64(&sc.metrics.NetworkBytesReceived, int64(networkStats.GetBytesReceived()))
-		atomic.StoreInt64(&sc.metrics.NetworkBytesSent, int64(networkStats.GetBytesSent()))
+		// 网络包统计
+		atomic.StoreUint64(&sc.metrics.TotalPackets, networkStats.GetTotalPackets())
+		atomic.StoreUint64(&sc.metrics.LostPackets, networkStats.GetLostPackets())
+		if networkStats.GetTotalPackets() > 0 {
+			sc.metrics.PacketLossRate = float64(sc.metrics.LostPackets) / float64(sc.metrics.TotalPackets)
+		}
+
+		// 网络字节统计
+		atomic.StoreUint64(&sc.metrics.BytesReceived, networkStats.GetBytesReceived())
+		atomic.StoreUint64(&sc.metrics.BytesSent, networkStats.GetBytesSent())
+
 		sc.metrics.mutex.Lock()
 
-		sc.metrics.PacketLossRate = sc.client.GetPacketLossRate()
-		sc.metrics.AverageLatency = networkStats.GetAverageLatency()
-		sc.metrics.MaxLatency = networkStats.GetMaxLatency()
-		sc.metrics.MinLatency = networkStats.GetMinLatency()
+		// 收集RTT统计
+		if networkStats.GetRTTCount() > 0 {
+			sc.metrics.RTTCount += int64(networkStats.GetRTTCount())
+			sc.metrics.TotalRTT += networkStats.GetTotalRTT()
+			sc.metrics.AverageRTT = networkStats.GetAverageRTT()
+			if networkStats.GetMaxRTT() > sc.metrics.MaxRTT {
+				sc.metrics.MaxRTT = networkStats.GetMaxRTT()
+			}
+			if networkStats.GetMinRTT() < sc.metrics.MinRTT || sc.metrics.MinRTT == 0 {
+				sc.metrics.MinRTT = networkStats.GetMinRTT()
+			}
+			// 计算平均RTT
+			if sc.metrics.RTTCount > 0 {
+				sc.metrics.AverageRTT = sc.metrics.TotalRTT / time.Duration(sc.metrics.RTTCount)
+			}
+		}
 
 		// 收集输入延迟统计
-		sc.metrics.InputLatencyCount += int64(networkStats.GetInputLatencyCount())
-		sc.metrics.TotalInputLatency += networkStats.GetAverageInputLatency() * time.Duration(networkStats.GetInputLatencyCount())
-		if networkStats.GetMaxInputLatency() > sc.metrics.MaxInputLatency {
-			sc.metrics.MaxInputLatency = networkStats.GetMaxInputLatency()
-		}
-		if networkStats.GetMinInputLatency() < sc.metrics.MinInputLatency || sc.metrics.MinInputLatency == 0 {
-			sc.metrics.MinInputLatency = networkStats.GetMinInputLatency()
+		if networkStats.GetInputLatencyCount() > 0 {
+			sc.metrics.InputLatencyCount += int64(networkStats.GetInputLatencyCount())
+			sc.metrics.TotalInputLatency += networkStats.GetAverageInputLatency() * time.Duration(networkStats.GetInputLatencyCount())
+			if networkStats.GetMaxInputLatency() > sc.metrics.MaxInputLatency {
+				sc.metrics.MaxInputLatency = networkStats.GetMaxInputLatency()
+			}
+			if networkStats.GetMinInputLatency() < sc.metrics.MinInputLatency || sc.metrics.MinInputLatency == 0 {
+				sc.metrics.MinInputLatency = networkStats.GetMinInputLatency()
+			}
+			// 计算平均输入延迟
+			if sc.metrics.InputLatencyCount > 0 {
+				sc.metrics.AverageInputLatency = sc.metrics.TotalInputLatency / time.Duration(sc.metrics.InputLatencyCount)
+			}
 		}
 
 		// 收集Jitter统计
@@ -476,37 +497,61 @@ func main() {
 				metrics.AverageInputLatency = avgInputLatency
 			}
 
-			// 基础统计信息
-			logger.Printf("[METRICS] Uptime: %v, Connected: %d, InputsSent: %d, FramesReceived: %d, Errors: %d/%d, Memory: %.2fMB, Goroutines: %d",
+			logger.Println(strings.Repeat("=", 80))
+			// === 系统基础统计 ===
+			logger.Printf("[SYSTEM] Uptime: %v, Memory: %.2fMB, Goroutines: %d",
 				uptime.Round(time.Second),
-				metrics.ConnectedClients,
-				metrics.TotalInputsSent,
-				metrics.TotalFramesReceived,
-				metrics.ConnectionErrors,
-				metrics.InputErrors,
 				float64(m.Alloc)/1024/1024,
 				runtime.NumGoroutine(),
 			)
 
-			// 详细统计信息
-			logger.Printf("[DETAILED] TotalFrames: %d, MissedFrames: %d, LateFrames: %d, PacketLoss: %.2f%%, AvgLatency: %v, MaxLatency: %v, MinLatency: %v",
+			// === 连接统计 ===
+			logger.Printf("[CONNECTION] Connected: %d, Errors: %d",
+				metrics.ConnectedClients,
+				metrics.ConnectionErrors,
+			)
+
+			// === 帧统计 ===
+			logger.Printf("[FRAME] Total: %d, Received: %d, Missed: %d, Late: %d",
 				metrics.TotalFrames,
+				metrics.TotalFramesReceived,
 				metrics.MissedFrames,
 				metrics.LateFrames,
-				metrics.PacketLossRate*100,
-				metrics.AverageLatency.Round(time.Millisecond),
-				metrics.MaxLatency.Round(time.Millisecond),
-				metrics.MinLatency.Round(time.Millisecond),
 			)
 
-			// 网络统计信息
-			logger.Printf("[NETWORK] NetworkBytesReceived: %d, NetworkBytesSent: %d, AvgFrameTime: %v",
-				metrics.NetworkBytesReceived,
-				metrics.NetworkBytesSent,
-				metrics.AverageFrameTime.Round(time.Microsecond),
+			// === 网络收发统计 ===（从NetworkStats获取）
+			var totalInputsSent, totalPackets, lostPackets uint64
+			var packetLossRate float64
+			if len(clients) > 0 && clients[0] != nil && clients[0].client != nil {
+				networkStats := clients[0].client.GetNetworkStats()
+				if networkStats != nil {
+					totalInputsSent = networkStats.GetTotalPackets()
+					totalPackets = networkStats.GetTotalPackets()
+					lostPackets = networkStats.GetLostPackets()
+					if totalPackets > 0 {
+						packetLossRate = float64(lostPackets) / float64(totalPackets)
+					}
+				}
+			}
+			logger.Printf("[NETWORK] Inputs: %d, Packets: %d, Lost: %d (%.2f%%), Bytes Sent: %d, Received: %d, Errors: %d",
+				totalInputsSent,
+				totalPackets,
+				lostPackets,
+				packetLossRate*100,
+				atomic.LoadUint64(&metrics.BytesSent),
+				atomic.LoadUint64(&metrics.BytesReceived),
+				metrics.InputErrors,
 			)
 
-			// 输入延时统计信息
+			// === RTT 延迟统计 ===
+			logger.Printf("[RTT] Count: %d, Avg: %v, Max: %v, Min: %v",
+				metrics.RTTCount,
+				metrics.AverageRTT.Round(time.Millisecond),
+				metrics.MaxRTT.Round(time.Millisecond),
+				metrics.MinRTT.Round(time.Millisecond),
+			)
+
+			// === 输入延迟统计 ===
 			logger.Printf("[INPUT_LATENCY] Count: %d, Avg: %v, Max: %v, Min: %v",
 				metrics.InputLatencyCount,
 				avgInputLatency.Round(time.Millisecond),
@@ -514,7 +559,7 @@ func main() {
 				metrics.MinInputLatency.Round(time.Millisecond),
 			)
 
-			// Jitter统计信息
+			// === Jitter 抖动统计 ===
 			logger.Printf("[JITTER] Count: %d, Avg: %v, Max: %v, Min: %v",
 				metrics.JitterCount,
 				metrics.AverageJitter.Round(time.Millisecond),
@@ -575,49 +620,82 @@ func main() {
 		}
 	}
 
-	// 输出最终统计
+	// === 输出最终统计报告 ===
 	metrics.mutex.RLock()
 	totalTime := time.Since(metrics.StartTime)
-	logger.Printf("[FINAL STATS] Total time: %v", totalTime.Round(time.Second))
-	logger.Printf("[FINAL STATS] Total inputs sent: %d", metrics.TotalInputsSent)
-	logger.Printf("[FINAL STATS] Total frames received: %d", metrics.TotalFramesReceived)
-	logger.Printf("[FINAL STATS] Total bytes sent: %d", metrics.TotalBytesSent)
-	logger.Printf("[FINAL STATS] Total bytes received: %d", metrics.TotalBytesReceived)
-	logger.Printf("[FINAL STATS] Connection errors: %d", metrics.ConnectionErrors)
-	logger.Printf("[FINAL STATS] Input errors: %d", metrics.InputErrors)
+	logger.Println("\n" + strings.Repeat("=", 80))
+	logger.Println("                           FINAL STATISTICS REPORT")
+	logger.Println(strings.Repeat("=", 80))
 
-	// 详细的帧和网络统计
-	logger.Printf("[FINAL STATS] Total frames processed: %d", metrics.TotalFrames)
-	logger.Printf("[FINAL STATS] Missed frames: %d", metrics.MissedFrames)
-	logger.Printf("[FINAL STATS] Late frames: %d", metrics.LateFrames)
-	logger.Printf("[FINAL STATS] Total packets: %d", metrics.TotalPackets)
-	logger.Printf("[FINAL STATS] Lost packets: %d", metrics.LostPackets)
-	logger.Printf("[FINAL STATS] Packet loss rate: %.2f%%", metrics.PacketLossRate*100)
-	logger.Printf("[FINAL STATS] Average latency: %v", metrics.AverageLatency.Round(time.Millisecond))
-	logger.Printf("[FINAL STATS] Max latency: %v", metrics.MaxLatency.Round(time.Millisecond))
-	logger.Printf("[FINAL STATS] Min latency: %v", metrics.MinLatency.Round(time.Millisecond))
-	logger.Printf("[FINAL STATS] Average frame time: %v", metrics.AverageFrameTime.Round(time.Microsecond))
-	logger.Printf("[FINAL STATS] Network bytes received: %d", metrics.NetworkBytesReceived)
-	logger.Printf("[FINAL STATS] Network bytes sent: %d", metrics.NetworkBytesSent)
+	// === 测试概览 ===
+	logger.Printf("[TEST OVERVIEW] Total Duration: %v", totalTime.Round(time.Second))
+	logger.Printf("[TEST OVERVIEW] Client Count: %d", config.ClientCount)
 
-	// 输入延时统计
-	logger.Printf("[FINAL STATS] Input latency samples: %d", metrics.InputLatencyCount)
+	// === 连接统计 ===
+	logger.Println("\n--- CONNECTION STATISTICS ---")
+	logger.Printf("[CONNECTION] Connected Clients: %d", metrics.ConnectedClients)
+	logger.Printf("[CONNECTION] Connection Errors: %d", metrics.ConnectionErrors)
+
+	// === 帧统计 ===
+	logger.Println("\n--- FRAME STATISTICS ---")
+	logger.Printf("[FRAME] Total Frames Processed: %d", metrics.TotalFrames)
+	logger.Printf("[FRAME] Total Frames Received: %d", metrics.TotalFramesReceived)
+	logger.Printf("[FRAME] Missed Frames: %d", metrics.MissedFrames)
+	logger.Printf("[FRAME] Late Frames: %d", metrics.LateFrames)
+	logger.Printf("[FRAME] Average Frame Time: %v", metrics.AverageFrameTime.Round(time.Microsecond))
+
+	// === 网络收发统计 ===（从NetworkStats获取）
+	logger.Println("\n--- NETWORK STATISTICS ---")
+	var totalInputsSent, totalPackets, lostPackets uint64
+	var packetLossRate float64
+	if len(clients) > 0 && clients[0] != nil && clients[0].client != nil {
+		networkStats := clients[0].client.GetNetworkStats()
+		if networkStats != nil {
+			totalInputsSent = networkStats.GetTotalPackets()
+			totalPackets = networkStats.GetTotalPackets()
+			lostPackets = networkStats.GetLostPackets()
+			if totalPackets > 0 {
+				packetLossRate = float64(lostPackets) / float64(totalPackets)
+			}
+		}
+	}
+	logger.Printf("[NETWORK] Total Inputs Sent: %d", totalInputsSent)
+	logger.Printf("[NETWORK] Input Errors: %d", metrics.InputErrors)
+	logger.Printf("[NETWORK] Total Packets: %d", totalPackets)
+	logger.Printf("[NETWORK] Lost Packets: %d", lostPackets)
+	logger.Printf("[NETWORK] Packet Loss Rate: %.2f%%", packetLossRate*100)
+	logger.Printf("[NETWORK] Total Bytes Sent: %d (%.2f MB)", atomic.LoadUint64(&metrics.BytesSent), float64(atomic.LoadUint64(&metrics.BytesSent))/1024/1024)
+	logger.Printf("[NETWORK] Total Bytes Received: %d (%.2f MB)", atomic.LoadUint64(&metrics.BytesReceived), float64(atomic.LoadUint64(&metrics.BytesReceived))/1024/1024)
+
+	// === RTT 延迟统计 ===
+	logger.Println("\n--- RTT LATENCY STATISTICS ---")
+	logger.Printf("[RTT] Sample Count: %d", metrics.RTTCount)
+	logger.Printf("[RTT] Average RTT: %v", metrics.AverageRTT.Round(time.Millisecond))
+	logger.Printf("[RTT] Maximum RTT: %v", metrics.MaxRTT.Round(time.Millisecond))
+	logger.Printf("[RTT] Minimum RTT: %v", metrics.MinRTT.Round(time.Millisecond))
+
+	// === 输入延迟统计 ===
+	logger.Println("\n--- INPUT LATENCY STATISTICS ---")
+	logger.Printf("[INPUT_LATENCY] Sample Count: %d", metrics.InputLatencyCount)
 	// 计算平均输入延迟
 	if metrics.InputLatencyCount > 0 {
 		metrics.AverageInputLatency = metrics.TotalInputLatency / time.Duration(metrics.InputLatencyCount)
 	}
-	logger.Printf("[FINAL STATS] Average input latency: %v", metrics.AverageInputLatency.Round(time.Millisecond))
-	logger.Printf("[FINAL STATS] Max input latency: %v", metrics.MaxInputLatency.Round(time.Millisecond))
-	logger.Printf("[FINAL STATS] Min input latency: %v", metrics.MinInputLatency.Round(time.Millisecond))
+	logger.Printf("[INPUT_LATENCY] Average Latency: %v", metrics.AverageInputLatency.Round(time.Millisecond))
+	logger.Printf("[INPUT_LATENCY] Maximum Latency: %v", metrics.MaxInputLatency.Round(time.Millisecond))
+	logger.Printf("[INPUT_LATENCY] Minimum Latency: %v", metrics.MinInputLatency.Round(time.Millisecond))
 
-	// Jitter统计
-	logger.Printf("[FINAL STATS] Jitter samples: %d", metrics.JitterCount)
-	logger.Printf("[FINAL STATS] Average jitter: %v", metrics.AverageJitter.Round(time.Millisecond))
-	logger.Printf("[FINAL STATS] Max jitter: %v", metrics.MaxJitter.Round(time.Millisecond))
-	logger.Printf("[FINAL STATS] Min jitter: %v", metrics.MinJitter.Round(time.Millisecond))
+	// === Jitter 抖动统计 ===
+	logger.Println("\n--- JITTER STATISTICS ---")
+	logger.Printf("[JITTER] Sample Count: %d", metrics.JitterCount)
+	logger.Printf("[JITTER] Average Jitter: %v", metrics.AverageJitter.Round(time.Millisecond))
+	logger.Printf("[JITTER] Maximum Jitter: %v", metrics.MaxJitter.Round(time.Millisecond))
+	logger.Printf("[JITTER] Minimum Jitter: %v", metrics.MinJitter.Round(time.Millisecond))
+
+	logger.Println(strings.Repeat("=", 80))
 
 	if totalTime.Seconds() > 0 {
-		logger.Printf("[FINAL STATS] Input rate: %.2f inputs/sec", float64(metrics.TotalInputsSent)/totalTime.Seconds())
+		logger.Printf("[FINAL STATS] Input rate: %.2f inputs/sec", float64(atomic.LoadUint64(&metrics.TotalPackets))/totalTime.Seconds())
 		logger.Printf("[FINAL STATS] Frame rate: %.2f frames/sec", float64(metrics.TotalFramesReceived)/totalTime.Seconds())
 		if metrics.TotalFrames > 0 {
 			missedRate := float64(metrics.MissedFrames) / float64(metrics.TotalFrames) * 100

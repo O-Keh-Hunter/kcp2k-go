@@ -248,6 +248,15 @@ func (c *KcpClient) Tick() {
 	c.TickOutgoing()
 }
 
+// GetRTT returns the current round-trip time in milliseconds.
+// Returns 0 if no RTT measurement is available yet.
+func (c *KcpClient) GetRTT() uint32 {
+	if c.peer == nil {
+		return 0
+	}
+	return c.peer.GetRTT()
+}
+
 // Disconnect closes the connection via peer API.
 func (c *KcpClient) Disconnect() {
 	c.peer.Disconnect()

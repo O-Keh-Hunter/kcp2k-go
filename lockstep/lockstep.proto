@@ -48,8 +48,6 @@ message PlayerState {
     uint32 id = 1;
     bool online = 2;
     int64 last_frame_id = 3;
-    int64 ping = 4;
-    int64 last_ping_time = 5;
 }
 
 message RoomState {
@@ -77,16 +75,6 @@ message JoinRoomRequest {
     uint32 player_id = 2;
 }
 
-message PingMessage {
-    int64 timestamp = 1;
-    uint32 player_id = 2;
-}
-
-message PongMessage {
-    int64 timestamp = 1;
-    uint32 player_id = 2;
-}
-
 // 主要的网络消息
 message LockStepMessage {
     enum MessageType {
@@ -97,13 +85,11 @@ message LockStepMessage {
         LEAVE_ROOM = 4;
         FRAME_REQ = 5;
         FRAME_RESP = 6;
-        PING = 7;
-        PONG = 8;
-        START = 9;
-        END = 10;
-        PLAYER_STATE = 11;
-        ROOM_STATE = 12;
-        ERROR = 13;
+        START = 7;
+        END = 8;
+        PLAYER_STATE = 9;
+        ROOM_STATE = 10;
+        ERROR = 11;
     }
     
     MessageType type = 1;

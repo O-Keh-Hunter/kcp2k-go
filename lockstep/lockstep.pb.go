@@ -32,8 +32,6 @@ const (
 	LockStepMessage_LEAVE_ROOM   LockStepMessage_MessageType = 4
 	LockStepMessage_FRAME_REQ    LockStepMessage_MessageType = 5
 	LockStepMessage_FRAME_RESP   LockStepMessage_MessageType = 6
-	LockStepMessage_PING         LockStepMessage_MessageType = 7
-	LockStepMessage_PONG         LockStepMessage_MessageType = 8
 	LockStepMessage_START        LockStepMessage_MessageType = 9
 	LockStepMessage_END          LockStepMessage_MessageType = 10
 	LockStepMessage_PLAYER_STATE LockStepMessage_MessageType = 11
@@ -51,8 +49,6 @@ var (
 		4:  "LEAVE_ROOM",
 		5:  "FRAME_REQ",
 		6:  "FRAME_RESP",
-		7:  "PING",
-		8:  "PONG",
 		9:  "START",
 		10: "END",
 		11: "PLAYER_STATE",
@@ -67,8 +63,6 @@ var (
 		"LEAVE_ROOM":   4,
 		"FRAME_REQ":    5,
 		"FRAME_RESP":   6,
-		"PING":         7,
-		"PONG":         8,
 		"START":        9,
 		"END":          10,
 		"PLAYER_STATE": 11,
@@ -101,7 +95,7 @@ func (x LockStepMessage_MessageType) Number() protoreflect.EnumNumber {
 
 // Deprecated: Use LockStepMessage_MessageType.Descriptor instead.
 func (LockStepMessage_MessageType) EnumDescriptor() ([]byte, []int) {
-	return file_lockstep_proto_rawDescGZIP(), []int{9, 0}
+	return file_lockstep_proto_rawDescGZIP(), []int{7, 0}
 }
 
 // 缺省为None。当用户的Input数据需要转发给GameSvr（对应LockStep Server的WatchRoom功能），可以将该参数置为Subscribe
@@ -151,7 +145,7 @@ func (x InputMessage_InputFlag) Number() protoreflect.EnumNumber {
 
 // Deprecated: Use InputMessage_InputFlag.Descriptor instead.
 func (InputMessage_InputFlag) EnumDescriptor() ([]byte, []int) {
-	return file_lockstep_proto_rawDescGZIP(), []int{10, 0}
+	return file_lockstep_proto_rawDescGZIP(), []int{8, 0}
 }
 
 // 基础类型定义
@@ -321,8 +315,6 @@ type PlayerState struct {
 	Id            uint32                 `protobuf:"varint,1,opt,name=id,proto3" json:"id,omitempty"`
 	Online        bool                   `protobuf:"varint,2,opt,name=online,proto3" json:"online,omitempty"`
 	LastFrameId   int64                  `protobuf:"varint,3,opt,name=last_frame_id,json=lastFrameId,proto3" json:"last_frame_id,omitempty"`
-	Ping          int64                  `protobuf:"varint,4,opt,name=ping,proto3" json:"ping,omitempty"`
-	LastPingTime  int64                  `protobuf:"varint,5,opt,name=last_ping_time,json=lastPingTime,proto3" json:"last_ping_time,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -374,20 +366,6 @@ func (x *PlayerState) GetOnline() bool {
 func (x *PlayerState) GetLastFrameId() int64 {
 	if x != nil {
 		return x.LastFrameId
-	}
-	return 0
-}
-
-func (x *PlayerState) GetPing() int64 {
-	if x != nil {
-		return x.Ping
-	}
-	return 0
-}
-
-func (x *PlayerState) GetLastPingTime() int64 {
-	if x != nil {
-		return x.LastPingTime
 	}
 	return 0
 }
@@ -640,110 +618,6 @@ func (x *JoinRoomRequest) GetPlayerId() uint32 {
 	return 0
 }
 
-type PingMessage struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Timestamp     int64                  `protobuf:"varint,1,opt,name=timestamp,proto3" json:"timestamp,omitempty"`
-	PlayerId      uint32                 `protobuf:"varint,2,opt,name=player_id,json=playerId,proto3" json:"player_id,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
-}
-
-func (x *PingMessage) Reset() {
-	*x = PingMessage{}
-	mi := &file_lockstep_proto_msgTypes[7]
-	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-	ms.StoreMessageInfo(mi)
-}
-
-func (x *PingMessage) String() string {
-	return protoimpl.X.MessageStringOf(x)
-}
-
-func (*PingMessage) ProtoMessage() {}
-
-func (x *PingMessage) ProtoReflect() protoreflect.Message {
-	mi := &file_lockstep_proto_msgTypes[7]
-	if x != nil {
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		if ms.LoadMessageInfo() == nil {
-			ms.StoreMessageInfo(mi)
-		}
-		return ms
-	}
-	return mi.MessageOf(x)
-}
-
-// Deprecated: Use PingMessage.ProtoReflect.Descriptor instead.
-func (*PingMessage) Descriptor() ([]byte, []int) {
-	return file_lockstep_proto_rawDescGZIP(), []int{7}
-}
-
-func (x *PingMessage) GetTimestamp() int64 {
-	if x != nil {
-		return x.Timestamp
-	}
-	return 0
-}
-
-func (x *PingMessage) GetPlayerId() uint32 {
-	if x != nil {
-		return x.PlayerId
-	}
-	return 0
-}
-
-type PongMessage struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Timestamp     int64                  `protobuf:"varint,1,opt,name=timestamp,proto3" json:"timestamp,omitempty"`
-	PlayerId      uint32                 `protobuf:"varint,2,opt,name=player_id,json=playerId,proto3" json:"player_id,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
-}
-
-func (x *PongMessage) Reset() {
-	*x = PongMessage{}
-	mi := &file_lockstep_proto_msgTypes[8]
-	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-	ms.StoreMessageInfo(mi)
-}
-
-func (x *PongMessage) String() string {
-	return protoimpl.X.MessageStringOf(x)
-}
-
-func (*PongMessage) ProtoMessage() {}
-
-func (x *PongMessage) ProtoReflect() protoreflect.Message {
-	mi := &file_lockstep_proto_msgTypes[8]
-	if x != nil {
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		if ms.LoadMessageInfo() == nil {
-			ms.StoreMessageInfo(mi)
-		}
-		return ms
-	}
-	return mi.MessageOf(x)
-}
-
-// Deprecated: Use PongMessage.ProtoReflect.Descriptor instead.
-func (*PongMessage) Descriptor() ([]byte, []int) {
-	return file_lockstep_proto_rawDescGZIP(), []int{8}
-}
-
-func (x *PongMessage) GetTimestamp() int64 {
-	if x != nil {
-		return x.Timestamp
-	}
-	return 0
-}
-
-func (x *PongMessage) GetPlayerId() uint32 {
-	if x != nil {
-		return x.PlayerId
-	}
-	return 0
-}
-
 // 主要的网络消息
 type LockStepMessage struct {
 	state         protoimpl.MessageState      `protogen:"open.v1"`
@@ -755,7 +629,7 @@ type LockStepMessage struct {
 
 func (x *LockStepMessage) Reset() {
 	*x = LockStepMessage{}
-	mi := &file_lockstep_proto_msgTypes[9]
+	mi := &file_lockstep_proto_msgTypes[7]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -767,7 +641,7 @@ func (x *LockStepMessage) String() string {
 func (*LockStepMessage) ProtoMessage() {}
 
 func (x *LockStepMessage) ProtoReflect() protoreflect.Message {
-	mi := &file_lockstep_proto_msgTypes[9]
+	mi := &file_lockstep_proto_msgTypes[7]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -780,7 +654,7 @@ func (x *LockStepMessage) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use LockStepMessage.ProtoReflect.Descriptor instead.
 func (*LockStepMessage) Descriptor() ([]byte, []int) {
-	return file_lockstep_proto_rawDescGZIP(), []int{9}
+	return file_lockstep_proto_rawDescGZIP(), []int{7}
 }
 
 func (x *LockStepMessage) GetType() LockStepMessage_MessageType {
@@ -817,7 +691,7 @@ type InputMessage struct {
 
 func (x *InputMessage) Reset() {
 	*x = InputMessage{}
-	mi := &file_lockstep_proto_msgTypes[10]
+	mi := &file_lockstep_proto_msgTypes[8]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -829,7 +703,7 @@ func (x *InputMessage) String() string {
 func (*InputMessage) ProtoMessage() {}
 
 func (x *InputMessage) ProtoReflect() protoreflect.Message {
-	mi := &file_lockstep_proto_msgTypes[10]
+	mi := &file_lockstep_proto_msgTypes[8]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -842,7 +716,7 @@ func (x *InputMessage) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use InputMessage.ProtoReflect.Descriptor instead.
 func (*InputMessage) Descriptor() ([]byte, []int) {
-	return file_lockstep_proto_rawDescGZIP(), []int{10}
+	return file_lockstep_proto_rawDescGZIP(), []int{8}
 }
 
 func (x *InputMessage) GetSequenceId() uint32 {
@@ -884,7 +758,7 @@ type GameStartMessage struct {
 
 func (x *GameStartMessage) Reset() {
 	*x = GameStartMessage{}
-	mi := &file_lockstep_proto_msgTypes[11]
+	mi := &file_lockstep_proto_msgTypes[9]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -896,7 +770,7 @@ func (x *GameStartMessage) String() string {
 func (*GameStartMessage) ProtoMessage() {}
 
 func (x *GameStartMessage) ProtoReflect() protoreflect.Message {
-	mi := &file_lockstep_proto_msgTypes[11]
+	mi := &file_lockstep_proto_msgTypes[9]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -909,7 +783,7 @@ func (x *GameStartMessage) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GameStartMessage.ProtoReflect.Descriptor instead.
 func (*GameStartMessage) Descriptor() ([]byte, []int) {
-	return file_lockstep_proto_rawDescGZIP(), []int{11}
+	return file_lockstep_proto_rawDescGZIP(), []int{9}
 }
 
 func (x *GameStartMessage) GetCurrentFrameId() uint32 {
@@ -938,7 +812,7 @@ type PlayerStateMessage struct {
 
 func (x *PlayerStateMessage) Reset() {
 	*x = PlayerStateMessage{}
-	mi := &file_lockstep_proto_msgTypes[12]
+	mi := &file_lockstep_proto_msgTypes[10]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -950,7 +824,7 @@ func (x *PlayerStateMessage) String() string {
 func (*PlayerStateMessage) ProtoMessage() {}
 
 func (x *PlayerStateMessage) ProtoReflect() protoreflect.Message {
-	mi := &file_lockstep_proto_msgTypes[12]
+	mi := &file_lockstep_proto_msgTypes[10]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -963,7 +837,7 @@ func (x *PlayerStateMessage) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PlayerStateMessage.ProtoReflect.Descriptor instead.
 func (*PlayerStateMessage) Descriptor() ([]byte, []int) {
-	return file_lockstep_proto_rawDescGZIP(), []int{12}
+	return file_lockstep_proto_rawDescGZIP(), []int{10}
 }
 
 func (x *PlayerStateMessage) GetPlayerId() uint32 {
@@ -999,7 +873,7 @@ type RoomStateMessage struct {
 
 func (x *RoomStateMessage) Reset() {
 	*x = RoomStateMessage{}
-	mi := &file_lockstep_proto_msgTypes[13]
+	mi := &file_lockstep_proto_msgTypes[11]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1011,7 +885,7 @@ func (x *RoomStateMessage) String() string {
 func (*RoomStateMessage) ProtoMessage() {}
 
 func (x *RoomStateMessage) ProtoReflect() protoreflect.Message {
-	mi := &file_lockstep_proto_msgTypes[13]
+	mi := &file_lockstep_proto_msgTypes[11]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1024,7 +898,7 @@ func (x *RoomStateMessage) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RoomStateMessage.ProtoReflect.Descriptor instead.
 func (*RoomStateMessage) Descriptor() ([]byte, []int) {
-	return file_lockstep_proto_rawDescGZIP(), []int{13}
+	return file_lockstep_proto_rawDescGZIP(), []int{11}
 }
 
 func (x *RoomStateMessage) GetRoomId() string {
@@ -1060,7 +934,7 @@ type ErrorMessage struct {
 
 func (x *ErrorMessage) Reset() {
 	*x = ErrorMessage{}
-	mi := &file_lockstep_proto_msgTypes[14]
+	mi := &file_lockstep_proto_msgTypes[12]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1072,7 +946,7 @@ func (x *ErrorMessage) String() string {
 func (*ErrorMessage) ProtoMessage() {}
 
 func (x *ErrorMessage) ProtoReflect() protoreflect.Message {
-	mi := &file_lockstep_proto_msgTypes[14]
+	mi := &file_lockstep_proto_msgTypes[12]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1085,7 +959,7 @@ func (x *ErrorMessage) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ErrorMessage.ProtoReflect.Descriptor instead.
 func (*ErrorMessage) Descriptor() ([]byte, []int) {
-	return file_lockstep_proto_rawDescGZIP(), []int{14}
+	return file_lockstep_proto_rawDescGZIP(), []int{12}
 }
 
 func (x *ErrorMessage) GetCode() uint32 {
@@ -1122,7 +996,7 @@ type RoomConfig struct {
 
 func (x *RoomConfig) Reset() {
 	*x = RoomConfig{}
-	mi := &file_lockstep_proto_msgTypes[15]
+	mi := &file_lockstep_proto_msgTypes[13]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1134,7 +1008,7 @@ func (x *RoomConfig) String() string {
 func (*RoomConfig) ProtoMessage() {}
 
 func (x *RoomConfig) ProtoReflect() protoreflect.Message {
-	mi := &file_lockstep_proto_msgTypes[15]
+	mi := &file_lockstep_proto_msgTypes[13]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1147,7 +1021,7 @@ func (x *RoomConfig) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RoomConfig.ProtoReflect.Descriptor instead.
 func (*RoomConfig) Descriptor() ([]byte, []int) {
-	return file_lockstep_proto_rawDescGZIP(), []int{15}
+	return file_lockstep_proto_rawDescGZIP(), []int{13}
 }
 
 func (x *RoomConfig) GetMaxPlayers() uint32 {
@@ -1191,7 +1065,7 @@ type ServerStats struct {
 
 func (x *ServerStats) Reset() {
 	*x = ServerStats{}
-	mi := &file_lockstep_proto_msgTypes[16]
+	mi := &file_lockstep_proto_msgTypes[14]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1203,7 +1077,7 @@ func (x *ServerStats) String() string {
 func (*ServerStats) ProtoMessage() {}
 
 func (x *ServerStats) ProtoReflect() protoreflect.Message {
-	mi := &file_lockstep_proto_msgTypes[16]
+	mi := &file_lockstep_proto_msgTypes[14]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1216,7 +1090,7 @@ func (x *ServerStats) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ServerStats.ProtoReflect.Descriptor instead.
 func (*ServerStats) Descriptor() ([]byte, []int) {
-	return file_lockstep_proto_rawDescGZIP(), []int{16}
+	return file_lockstep_proto_rawDescGZIP(), []int{14}
 }
 
 func (x *ServerStats) GetRooms() uint32 {
@@ -1264,13 +1138,11 @@ const file_lockstep_proto_rawDesc = "" +
 	"\frecv_tick_ms\x18\x02 \x01(\rR\n" +
 	"recvTickMs\x12(\n" +
 	"\x10valid_data_count\x18\x03 \x01(\rR\x0evalidDataCount\x12;\n" +
-	"\x0eDataCollection\x18\x04 \x03(\v2\x13.lockstep.RelayDataR\x0eDataCollection\"\x93\x01\n" +
+	"\x0eDataCollection\x18\x04 \x03(\v2\x13.lockstep.RelayDataR\x0eDataCollection\"Y\n" +
 	"\vPlayerState\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\rR\x02id\x12\x16\n" +
 	"\x06online\x18\x02 \x01(\bR\x06online\x12\"\n" +
-	"\rlast_frame_id\x18\x03 \x01(\x03R\vlastFrameId\x12\x12\n" +
-	"\x04ping\x18\x04 \x01(\x03R\x04ping\x12$\n" +
-	"\x0elast_ping_time\x18\x05 \x01(\x03R\flastPingTime\"\xd1\x01\n" +
+	"\rlast_frame_id\x18\x03 \x01(\x03R\vlastFrameId\"\xd1\x01\n" +
 	"\tRoomState\x12\x16\n" +
 	"\x06status\x18\x01 \x01(\rR\x06status\x12'\n" +
 	"\x0fcurrent_players\x18\x02 \x01(\rR\x0ecurrentPlayers\x12\x1f\n" +
@@ -1289,16 +1161,10 @@ const file_lockstep_proto_rawDesc = "" +
 	"\x05error\x18\x03 \x01(\tR\x05error\"G\n" +
 	"\x0fJoinRoomRequest\x12\x17\n" +
 	"\aroom_id\x18\x01 \x01(\tR\x06roomId\x12\x1b\n" +
-	"\tplayer_id\x18\x02 \x01(\rR\bplayerId\"H\n" +
-	"\vPingMessage\x12\x1c\n" +
-	"\ttimestamp\x18\x01 \x01(\x03R\ttimestamp\x12\x1b\n" +
-	"\tplayer_id\x18\x02 \x01(\rR\bplayerId\"H\n" +
-	"\vPongMessage\x12\x1c\n" +
-	"\ttimestamp\x18\x01 \x01(\x03R\ttimestamp\x12\x1b\n" +
-	"\tplayer_id\x18\x02 \x01(\rR\bplayerId\"\xac\x02\n" +
+	"\tplayer_id\x18\x02 \x01(\rR\bplayerId\"\x98\x02\n" +
 	"\x0fLockStepMessage\x129\n" +
 	"\x04type\x18\x01 \x01(\x0e2%.lockstep.LockStepMessage.MessageTypeR\x04type\x12\x18\n" +
-	"\apayload\x18\x02 \x01(\fR\apayload\"\xc3\x01\n" +
+	"\apayload\x18\x02 \x01(\fR\apayload\"\xaf\x01\n" +
 	"\vMessageType\x12\v\n" +
 	"\aUNKNOWN\x10\x00\x12\t\n" +
 	"\x05FRAME\x10\x01\x12\t\n" +
@@ -1308,9 +1174,7 @@ const file_lockstep_proto_rawDesc = "" +
 	"LEAVE_ROOM\x10\x04\x12\r\n" +
 	"\tFRAME_REQ\x10\x05\x12\x0e\n" +
 	"\n" +
-	"FRAME_RESP\x10\x06\x12\b\n" +
-	"\x04PING\x10\a\x12\b\n" +
-	"\x04PONG\x10\b\x12\t\n" +
+	"FRAME_RESP\x10\x06\x12\t\n" +
 	"\x05START\x10\t\x12\a\n" +
 	"\x03END\x10\n" +
 	"\x12\x10\n" +
@@ -1371,7 +1235,7 @@ func file_lockstep_proto_rawDescGZIP() []byte {
 }
 
 var file_lockstep_proto_enumTypes = make([]protoimpl.EnumInfo, 2)
-var file_lockstep_proto_msgTypes = make([]protoimpl.MessageInfo, 17)
+var file_lockstep_proto_msgTypes = make([]protoimpl.MessageInfo, 15)
 var file_lockstep_proto_goTypes = []any{
 	(LockStepMessage_MessageType)(0), // 0: lockstep.LockStepMessage.MessageType
 	(InputMessage_InputFlag)(0),      // 1: lockstep.InputMessage.InputFlag
@@ -1382,16 +1246,14 @@ var file_lockstep_proto_goTypes = []any{
 	(*FrameRequest)(nil),             // 6: lockstep.FrameRequest
 	(*FrameResponse)(nil),            // 7: lockstep.FrameResponse
 	(*JoinRoomRequest)(nil),          // 8: lockstep.JoinRoomRequest
-	(*PingMessage)(nil),              // 9: lockstep.PingMessage
-	(*PongMessage)(nil),              // 10: lockstep.PongMessage
-	(*LockStepMessage)(nil),          // 11: lockstep.LockStepMessage
-	(*InputMessage)(nil),             // 12: lockstep.InputMessage
-	(*GameStartMessage)(nil),         // 13: lockstep.GameStartMessage
-	(*PlayerStateMessage)(nil),       // 14: lockstep.PlayerStateMessage
-	(*RoomStateMessage)(nil),         // 15: lockstep.RoomStateMessage
-	(*ErrorMessage)(nil),             // 16: lockstep.ErrorMessage
-	(*RoomConfig)(nil),               // 17: lockstep.RoomConfig
-	(*ServerStats)(nil),              // 18: lockstep.ServerStats
+	(*LockStepMessage)(nil),          // 9: lockstep.LockStepMessage
+	(*InputMessage)(nil),             // 10: lockstep.InputMessage
+	(*GameStartMessage)(nil),         // 11: lockstep.GameStartMessage
+	(*PlayerStateMessage)(nil),       // 12: lockstep.PlayerStateMessage
+	(*RoomStateMessage)(nil),         // 13: lockstep.RoomStateMessage
+	(*ErrorMessage)(nil),             // 14: lockstep.ErrorMessage
+	(*RoomConfig)(nil),               // 15: lockstep.RoomConfig
+	(*ServerStats)(nil),              // 16: lockstep.ServerStats
 }
 var file_lockstep_proto_depIdxs = []int32{
 	2, // 0: lockstep.Frame.DataCollection:type_name -> lockstep.RelayData
@@ -1418,7 +1280,7 @@ func file_lockstep_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_lockstep_proto_rawDesc), len(file_lockstep_proto_rawDesc)),
 			NumEnums:      2,
-			NumMessages:   17,
+			NumMessages:   15,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

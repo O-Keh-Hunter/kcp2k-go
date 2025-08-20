@@ -73,7 +73,7 @@ func TestGetServerStats_EmptyServer(t *testing.T) {
 		t.Errorf("Expected network_stats to be map[string]interface{}, got %T", stats["network_stats"])
 	}
 
-	expectedNetworkFields := []string{"total_packets", "lost_packets", "bytes_received", "bytes_sent", "avg_latency", "max_latency", "min_latency"}
+	expectedNetworkFields := []string{"total_packets", "lost_packets", "bytes_received", "bytes_sent", "avg_rtt", "max_rtt", "min_rtt"}
 	for _, field := range expectedNetworkFields {
 		if _, exists := networkStats[field]; !exists {
 			t.Errorf("Expected network_stats to contain field %s", field)
@@ -124,33 +124,27 @@ func TestGetServerStats_WithRooms(t *testing.T) {
 		ID:           1,
 		ConnectionID: 1,
 		State: &PlayerState{
-			Online:       true,
-			Ping:         50,
-			LastPingTime: time.Now().UnixMilli(),
+			Online: true,
 		},
-		InputBuffer: make(map[FrameID]*InputMessage),
+		InputBuffer: make(map[FrameID][]*InputMessage),
 	}
 
 	room1.Players[2] = &Player{
 		ID:           2,
 		ConnectionID: 2,
 		State: &PlayerState{
-			Online:       true,
-			Ping:         30,
-			LastPingTime: time.Now().UnixMilli(),
+			Online: true,
 		},
-		InputBuffer: make(map[FrameID]*InputMessage),
+		InputBuffer: make(map[FrameID][]*InputMessage),
 	}
 
 	room2.Players[3] = &Player{
 		ID:           3,
 		ConnectionID: 3,
 		State: &PlayerState{
-			Online:       true,
-			Ping:         40,
-			LastPingTime: time.Now().UnixMilli(),
+			Online: true,
 		},
-		InputBuffer: make(map[FrameID]*InputMessage),
+		InputBuffer: make(map[FrameID][]*InputMessage),
 	}
 
 	// 获取统计信息
@@ -274,10 +268,10 @@ func TestGetServerStats_WithNetworkStats(t *testing.T) {
 	room.NetworkStats.lostPackets = 10
 	room.NetworkStats.bytesReceived = 50000
 	room.NetworkStats.bytesSent = 60000
-	room.NetworkStats.latencySum = 500 * time.Millisecond
-	room.NetworkStats.latencyCount = 10
-	room.NetworkStats.maxLatency = 100 * time.Millisecond
-	room.NetworkStats.minLatency = 20 * time.Millisecond
+	room.NetworkStats.rttSum = 500 * time.Millisecond
+	room.NetworkStats.rttCount = 10
+	room.NetworkStats.maxRTT = 100 * time.Millisecond
+	room.NetworkStats.minRTT = 20 * time.Millisecond
 	room.NetworkStats.mutex.Unlock()
 
 	// 获取统计信息
@@ -306,21 +300,21 @@ func TestGetServerStats_WithNetworkStats(t *testing.T) {
 	}
 
 	// 验证平均延迟计算
-	avgLatency, ok := networkStats["avg_latency"].(float64)
+	avgLatency, ok := networkStats["avg_rtt"].(float64)
 	if !ok {
-		t.Errorf("Expected avg_latency to be float64, got %T", networkStats["avg_latency"])
+		t.Errorf("Expected avg_rtt to be float64, got %T", networkStats["avg_rtt"])
 	}
 	expectedAvgLatency := float64(500*time.Millisecond.Nanoseconds()) / float64(10) / 1e6 // 转换为毫秒
 	if avgLatency != expectedAvgLatency {
-		t.Errorf("Expected avg_latency to be %f, got %f", expectedAvgLatency, avgLatency)
+		t.Errorf("Expected avg_rtt to be %f, got %f", expectedAvgLatency, avgLatency)
 	}
 
-	if networkStats["max_latency"] != int64(100) {
-		t.Errorf("Expected max_latency to be 100, got %v", networkStats["max_latency"])
+	if networkStats["max_rtt"] != int64(100) {
+		t.Errorf("Expected max_rtt to be 100, got %v", networkStats["max_rtt"])
 	}
 
-	if networkStats["min_latency"] != int64(20) {
-		t.Errorf("Expected min_latency to be 20, got %v", networkStats["min_latency"])
+	if networkStats["min_rtt"] != int64(20) {
+		t.Errorf("Expected min_rtt to be 20, got %v", networkStats["min_rtt"])
 	}
 }
 
@@ -371,10 +365,10 @@ func TestGetServerStats_MultipleRoomsAggregation(t *testing.T) {
 	room1.NetworkStats.lostPackets = 5
 	room1.NetworkStats.bytesReceived = 25000
 	room1.NetworkStats.bytesSent = 30000
-	room1.NetworkStats.latencySum = 250 * time.Millisecond
-	room1.NetworkStats.latencyCount = 5
-	room1.NetworkStats.maxLatency = 80 * time.Millisecond
-	room1.NetworkStats.minLatency = 30 * time.Millisecond
+	room1.NetworkStats.rttSum = 250 * time.Millisecond
+	room1.NetworkStats.rttCount = 5
+	room1.NetworkStats.maxRTT = 80 * time.Millisecond
+	room1.NetworkStats.minRTT = 30 * time.Millisecond
 	room1.NetworkStats.mutex.Unlock()
 
 	// 为房间2设置统计数据
@@ -389,10 +383,10 @@ func TestGetServerStats_MultipleRoomsAggregation(t *testing.T) {
 	room2.NetworkStats.lostPackets = 8
 	room2.NetworkStats.bytesReceived = 40000
 	room2.NetworkStats.bytesSent = 45000
-	room2.NetworkStats.latencySum = 400 * time.Millisecond
-	room2.NetworkStats.latencyCount = 8
-	room2.NetworkStats.maxLatency = 120 * time.Millisecond // 更大的最大延迟
-	room2.NetworkStats.minLatency = 15 * time.Millisecond  // 更小的最小延迟
+	room2.NetworkStats.rttSum = 400 * time.Millisecond
+	room2.NetworkStats.rttCount = 8
+	room2.NetworkStats.maxRTT = 120 * time.Millisecond // 更大的最大延迟
+	room2.NetworkStats.minRTT = 15 * time.Millisecond  // 更小的最小延迟
 	room2.NetworkStats.mutex.Unlock()
 
 	// 获取统计信息
@@ -439,24 +433,24 @@ func TestGetServerStats_MultipleRoomsAggregation(t *testing.T) {
 	}
 
 	// 验证最大延迟取最大值
-	if networkStats["max_latency"] != int64(120) { // max(80, 120)
-		t.Errorf("Expected max_latency to be 120, got %v", networkStats["max_latency"])
+	if networkStats["max_rtt"] != int64(120) { // max(80, 120)
+		t.Errorf("Expected max_rtt to be 120, got %v", networkStats["max_rtt"])
 	}
 
 	// 验证最小延迟取最小值
-	if networkStats["min_latency"] != int64(15) { // min(30, 15)
-		t.Errorf("Expected min_latency to be 15, got %v", networkStats["min_latency"])
+	if networkStats["min_rtt"] != int64(15) { // min(30, 15)
+		t.Errorf("Expected min_rtt to be 15, got %v", networkStats["min_rtt"])
 	}
 
 	// 验证平均延迟计算
-	avgLatency, ok := networkStats["avg_latency"].(float64)
+	avgLatency, ok := networkStats["avg_rtt"].(float64)
 	if !ok {
-		t.Errorf("Expected avg_latency to be float64, got %T", networkStats["avg_latency"])
+		t.Errorf("Expected avg_rtt to be float64, got %T", networkStats["avg_rtt"])
 	}
 	// 总延迟: 250ms + 400ms = 650ms, 总计数: 5 + 8 = 13
 	expectedAvgLatency := float64(650*time.Millisecond.Nanoseconds()) / float64(13) / 1e6
 	if avgLatency != expectedAvgLatency {
-		t.Errorf("Expected avg_latency to be %f, got %f", expectedAvgLatency, avgLatency)
+		t.Errorf("Expected avg_rtt to be %f, got %f", expectedAvgLatency, avgLatency)
 	}
 }
 

@@ -110,6 +110,18 @@ func (s *KcpServer) GetClientEndPoint(connectionId int) *net.UDPAddr {
 	return nil
 }
 
+// GetConnection returns the KcpServerConnection for the given connection ID.
+// Returns nil if the connection doesn't exist.
+func (s *KcpServer) GetConnection(connectionId int) *KcpServerConnection {
+	s.mu.RLock()
+	c, ok := s.connections[connectionId]
+	s.mu.RUnlock()
+	if ok {
+		return c
+	}
+	return nil
+}
+
 // receive one datagram non-blocking-ish using deadlines.
 func (s *KcpServer) rawReceiveFrom() ([]byte, *net.UDPAddr, bool) {
 	if s.conn == nil {

@@ -262,43 +262,57 @@ func (s *LockStepServer) processFrame(room *Room) {
 	}
 
 	// 收集玩家输入
-	missedInputCount := 0
+	onlinePlayerCount := 0
+	playersWithInput := 0
+	// s.logger.Printf("Room %s: Processing frame %d, collecting inputs...", room.ID, frameID)
 	for playerID, player := range room.Players {
 		player.Mutex.RLock()
-		if inputData, exists := player.InputBuffer[frameID]; exists {
-			// 计算输入延迟：当前时间 - 输入时间戳
-			delayMs := uint32(time.Now().UnixMilli() - int64(inputData.Timestamp))
+		// 只统计在线玩家
+		if player.State.Online {
+			onlinePlayerCount++
+		}
 
-			// 记录输入延迟统计
-			if room.NetworkStats != nil {
-				inputLatency := time.Duration(delayMs) * time.Millisecond
-				room.NetworkStats.IncrementInputLatencyStats(inputLatency)
+		if inputList, exists := player.InputBuffer[frameID]; exists && len(inputList) > 0 {
+			// 处理该帧的所有输入消息
+			for _, inputData := range inputList {
+				// s.logger.Printf("Room %s: Frame %d found input from player %d, seq %d", room.ID, frameID, playerID, inputData.SequenceId)
+				// 计算输入延迟：当前时间 - 输入时间戳
+				delayMs := uint32(time.Now().UnixMilli() - int64(inputData.Timestamp))
+
+				// 记录输入延迟统计
+				if room.NetworkStats != nil {
+					inputLatency := time.Duration(delayMs) * time.Millisecond
+					room.NetworkStats.IncrementInputLatencyStats(inputLatency)
+				}
+
+				// 根据玩家在线状态设置Flag字段（第0位：1表示在线，0表示不在线）
+				var flag uint32 = 0
+				if player.State.Online {
+					flag |= 1 // 设置第0位为1，表示玩家在线
+				}
+
+				frame.DataCollection = append(frame.DataCollection, &RelayData{
+					SequenceId: inputData.SequenceId,
+					PlayerId:   uint32(playerID),
+					Data:       inputData.Data,
+					DelayMs:    delayMs,
+					Flag:       flag,
+				})
+				frame.ValidDataCount++
 			}
-
-			// 根据玩家在线状态设置Flag字段（第0位：1表示在线，0表示不在线）
-			var flag uint32 = 0
+			// 如果该玩家有输入，计数
 			if player.State.Online {
-				flag |= 1 // 设置第0位为1，表示玩家在线
+				playersWithInput++
 			}
-
-			frame.DataCollection = append(frame.DataCollection, &RelayData{
-				SequenceId: inputData.SequenceId,
-				PlayerId:   uint32(playerID),
-				Data:       inputData.Data,
-				DelayMs:    delayMs,
-				Flag:       flag,
-			})
+			// 清理已处理的输入
 			delete(player.InputBuffer, frameID)
-			frame.ValidDataCount++
-		} else {
-			// 没有输入数据，添加空输入
-			missedInputCount++
 		}
 		player.Mutex.RUnlock()
 	}
 
-	// 更新帧统计 - 如果有玩家缺少输入，记录为丢帧
-	if missedInputCount > 0 && room.FrameStats != nil {
+	// 更新帧统计 - 只有当所有在线玩家都没有输入时才记录为丢帧
+	// 这样可以避免因为个别玩家AFK或网络问题导致的误报
+	if onlinePlayerCount > 0 && playersWithInput == 0 && room.FrameStats != nil {
 		room.FrameStats.mutex.Lock()
 		room.FrameStats.missedFrames++
 		room.FrameStats.mutex.Unlock()
@@ -548,8 +562,6 @@ func (s *LockStepServer) handleRoomMessage(room *Room, connectionID int, msg *Lo
 		s.handlePlayerInput(room, connectionID, msg.Payload)
 	case LockStepMessage_FRAME_REQ:
 		s.handleFrameRequest(room, connectionID, msg.Payload)
-	case LockStepMessage_PING:
-		s.handlePing(room, connectionID, msg.Payload)
 	default:
 		s.logger.Printf("Room %s: Unknown message type %d from connection %d", room.ID, msg.Type, connectionID)
 	}
@@ -588,7 +600,15 @@ func (s *LockStepServer) handlePlayerInput(room *Room, connectionID int, payload
 // handleInput 处理输入
 func (s *LockStepServer) handleInput(room *Room, player *Player, frameID FrameID, input *InputMessage) {
 	player.Mutex.Lock()
-	player.InputBuffer[frameID] = input
+	// 检查是否已经有输入在这个帧中
+	if existingInputs, exists := player.InputBuffer[frameID]; exists {
+		// s.logger.Printf("Room %s: Player %d input seq %d APPENDING to existing %d inputs for frame %d",
+		// 	room.ID, player.ID, input.SequenceId, len(existingInputs), frameID)
+		player.InputBuffer[frameID] = append(existingInputs, input)
+	} else {
+		// s.logger.Printf("Room %s: Player %d input seq %d assigned to frame %d", room.ID, player.ID, input.SequenceId, frameID)
+		player.InputBuffer[frameID] = []*InputMessage{input}
+	}
 	player.Mutex.Unlock()
 }
 
@@ -703,75 +723,6 @@ func (s *LockStepServer) handleJoinRoom(room *Room, connectionID int, payload []
 	}
 }
 
-// handlePing 处理Ping消息
-func (s *LockStepServer) handlePing(room *Room, connectionID int, payload []byte) {
-	// 解析Ping消息
-	pingMsg := &PingMessage{}
-	if err := proto.Unmarshal(payload, pingMsg); err != nil {
-		s.logger.Printf("Failed to unmarshal ping message: %v", err)
-		// 如果解析失败，直接回复原始payload
-		msg := &LockStepMessage{
-			Type:    LockStepMessage_PONG,
-			Payload: payload,
-		}
-		data, _ := proto.Marshal(msg)
-		room.KcpServer.Send(connectionID, data, kcp2k.KcpReliable)
-		return
-	}
-
-	// 计算延迟并更新统计
-	clientTimestamp := pingMsg.Timestamp
-	currentTime := time.Now().UnixMilli()
-
-	if clientTimestamp > 0 {
-		latency := time.Duration(currentTime-clientTimestamp) * time.Millisecond
-
-		// 更新网络统计信息
-		s.updateNetworkStats(room, latency)
-
-		// 通过房间查找玩家并更新延迟信息
-		room.Mutex.RLock()
-		var player *Player
-		for _, p := range room.Players {
-			if p.ConnectionID == connectionID {
-				player = p
-				break
-			}
-		}
-		room.Mutex.RUnlock()
-
-		if player != nil && player.State != nil {
-			player.Mutex.Lock()
-			player.State.Ping = int64(latency.Milliseconds())
-			player.State.LastPingTime = currentTime
-			player.Mutex.Unlock()
-		}
-	}
-
-	// 回复Pong
-	pongMsg := &PongMessage{
-		Timestamp: clientTimestamp,
-		PlayerId:  pingMsg.PlayerId,
-	}
-	pongPayload, err := proto.Marshal(pongMsg)
-	if err != nil {
-		s.logger.Printf("Failed to marshal pong message: %v", err)
-		return
-	}
-
-	msg := &LockStepMessage{
-		Type:    LockStepMessage_PONG,
-		Payload: pongPayload,
-	}
-	data, err := proto.Marshal(msg)
-	if err != nil {
-		s.logger.Printf("Room %s: Failed to marshal pong message: %v", room.ID, err)
-		return
-	}
-
-	room.KcpServer.Send(connectionID, data, kcp2k.KcpReliable)
-}
-
 // updateNetworkStats 更新网络统计信息
 func (s *LockStepServer) updateNetworkStats(room *Room, latency time.Duration) {
 	if room.NetworkStats == nil {
@@ -782,15 +733,15 @@ func (s *LockStepServer) updateNetworkStats(room *Room, latency time.Duration) {
 	defer room.NetworkStats.mutex.Unlock()
 
 	// 更新延迟统计
-	room.NetworkStats.latencySum += latency
-	room.NetworkStats.latencyCount++
+	room.NetworkStats.rttSum += latency
+	room.NetworkStats.rttCount++
 
-	// 更新最大/最小延迟
-	if latency > room.NetworkStats.maxLatency {
-		room.NetworkStats.maxLatency = latency
+	// 更新最大和最小延迟
+	if latency > room.NetworkStats.maxRTT {
+		room.NetworkStats.maxRTT = latency
 	}
-	if latency < room.NetworkStats.minLatency {
-		room.NetworkStats.minLatency = latency
+	if latency < room.NetworkStats.minRTT {
+		room.NetworkStats.minRTT = latency
 	}
 
 	// 更新总包数
@@ -826,10 +777,10 @@ func (s *LockStepServer) GetServerStats() map[string]interface{} {
 
 	// 汇总所有房间的网络统计信息
 	var totalPackets, lostPackets, bytesReceived, bytesSent uint64
-	var latencySum time.Duration
-	var maxLatency, minLatency time.Duration
-	latencyCount := 0
-	minLatency = time.Hour // 初始化为很大的值
+	var rttSum time.Duration
+	var maxRtt, minRtt time.Duration
+	rttCount := 0
+	minRtt = time.Hour // 初始化为很大的值
 
 	// 汇总输入延迟统计信息
 	var inputLatencySum time.Duration
@@ -869,13 +820,13 @@ func (s *LockStepServer) GetServerStats() map[string]interface{} {
 
 			// 延迟统计
 			netStats.mutex.RLock()
-			latencySum += netStats.latencySum
-			latencyCount += int(netStats.latencyCount)
-			if netStats.maxLatency > maxLatency {
-				maxLatency = netStats.maxLatency
+			rttSum += netStats.rttSum
+			rttCount += int(netStats.rttCount)
+			if netStats.maxRTT > maxRtt {
+				maxRtt = netStats.maxRTT
 			}
-			if netStats.minLatency < minLatency && netStats.minLatency > 0 {
-				minLatency = netStats.minLatency
+			if netStats.minRTT < minRtt && netStats.minRTT > 0 {
+				minRtt = netStats.minRTT
 			}
 
 			// 输入延迟统计
@@ -908,15 +859,15 @@ func (s *LockStepServer) GetServerStats() map[string]interface{} {
 	}
 
 	// 计算平均延迟
-	avgLatency := float64(0)
-	if latencyCount > 0 {
-		avgLatency = float64(latencySum.Nanoseconds()) / float64(latencyCount) / 1e6 // 转换为毫秒
+	avgRtt := float64(0)
+	if rttCount > 0 {
+		avgRtt = float64(rttSum.Nanoseconds()) / float64(rttCount) / 1e6 // 转换为毫秒
 	}
 
 	// 处理最小延迟
-	minLatencyMs := int64(0)
-	if minLatency != time.Hour && minLatency > 0 {
-		minLatencyMs = minLatency.Milliseconds()
+	minRttMs := int64(0)
+	if minRtt != time.Hour && minRtt > 0 {
+		minRttMs = minRtt.Milliseconds()
 	}
 
 	// 计算平均输入延迟
@@ -962,9 +913,9 @@ func (s *LockStepServer) GetServerStats() map[string]interface{} {
 			"lost_packets":   lostPackets,
 			"bytes_received": bytesReceived,
 			"bytes_sent":     bytesSent,
-			"avg_latency":    avgLatency,
-			"max_latency":    maxLatency.Milliseconds(),
-			"min_latency":    minLatencyMs,
+			"avg_rtt":        avgRtt,
+			"max_rtt":        maxRtt.Milliseconds(),
+			"min_rtt":        minRttMs,
 		},
 		"input_latency_stats": map[string]interface{}{
 			"input_latency_count": inputLatencyCount,

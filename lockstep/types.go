@@ -24,26 +24,6 @@ const (
 	RoomStatusEnded   RoomStatus = 3 // 游戏结束
 )
 
-// MessageType 消息类型别名，映射到 protobuf 枚举
-type MessageType = LockStepMessage_MessageType
-
-// 消息类型常量
-const (
-	// MessageTypeFrame       = LockStepMessage_FRAME
-	MessageTypeInput       = LockStepMessage_INPUT
-	MessageTypeFrameReq    = LockStepMessage_FRAME_REQ
-	MessageTypeFrameResp   = LockStepMessage_FRAME_RESP
-	MessageTypeReady       = LockStepMessage_START // 映射到 START
-	MessageTypeStart       = LockStepMessage_START
-	MessageTypePlayerState = LockStepMessage_PLAYER_STATE
-	MessageTypeRoomState   = LockStepMessage_ROOM_STATE
-	MessageTypePing        = LockStepMessage_PING
-	MessageTypePong        = LockStepMessage_PONG
-	MessageTypeJoinRoom    = LockStepMessage_JOIN_ROOM
-	MessageTypeEnd         = LockStepMessage_END
-	MessageTypeError       = LockStepMessage_ERROR
-)
-
 // 错误码定义
 const (
 	ErrorCodeUnknown             = 1000 // 未知错误
@@ -71,21 +51,13 @@ func DeserializeMessage(data []byte, msg proto.Message) error {
 	return proto.Unmarshal(data, msg)
 }
 
-// 创建 LockStepMessage 的辅助函数
-func NewLockStepMessage(msgType MessageType, payload []byte) *LockStepMessage {
-	return &LockStepMessage{
-		Type:    msgType,
-		Payload: payload,
-	}
-}
-
 // 将 protobuf PlayerState 转换为兼容格式
 func (ps *PlayerState) ToLegacyPlayerState() LegacyPlayerState {
 	return LegacyPlayerState{
 		Online:     ps.Online,
-		LastSeen:   time.Unix(ps.LastPingTime/1000, 0),
-		Latency:    int(ps.Ping),
-		PacketLoss: 0.0, // protobuf 版本暂不支持
+		LastSeen:   time.Now(), // 使用当前时间，ping 信息由 kcp2k-go 基础库管理
+		Latency:    0,          // ping 延迟由 kcp2k-go 基础库管理
+		PacketLoss: 0.0,        // protobuf 版本暂不支持
 	}
 }
 
@@ -107,12 +79,12 @@ type LegacyRoomState struct {
 
 // Player 玩家信息
 type Player struct {
-	ID           PlayerID                  `json:"id"`            // 玩家ID
-	ConnectionID int                       `json:"connection_id"` // KCP连接ID
-	State        *PlayerState              `json:"state"`         // 玩家状态（使用 protobuf 结构体）
-	LastFrameID  FrameID                   `json:"last_frame_id"` // 最后接收的帧ID
-	InputBuffer  map[FrameID]*InputMessage `json:"-"`             // 输入缓冲区
-	Mutex        sync.RWMutex              `json:"-"`             // 读写锁
+	ID           PlayerID                    `json:"id"`            // 玩家ID
+	ConnectionID int                         `json:"connection_id"` // KCP连接ID
+	State        *PlayerState                `json:"state"`         // 玩家状态（使用 protobuf 结构体）
+	LastFrameID  FrameID                     `json:"last_frame_id"` // 最后接收的帧ID
+	InputBuffer  map[FrameID][]*InputMessage `json:"-"`             // 输入缓冲区
+	Mutex        sync.RWMutex                `json:"-"`             // 读写锁
 }
 
 // Room 房间信息
@@ -170,9 +142,9 @@ func (r *Room) GetRoomStats() map[string]interface{} {
 		stats["lost_packets"] = r.NetworkStats.GetLostPackets()
 		stats["bytes_received"] = r.NetworkStats.GetBytesReceived()
 		stats["bytes_sent"] = r.NetworkStats.GetBytesSent()
-		stats["average_latency"] = r.NetworkStats.GetAverageLatency().Milliseconds()
-		stats["max_latency"] = r.NetworkStats.GetMaxLatency().Milliseconds()
-		stats["min_latency"] = r.NetworkStats.GetMinLatency().Milliseconds()
+		stats["average_rtt"] = r.NetworkStats.GetAverageRTT().Milliseconds()
+		stats["max_rtt"] = r.NetworkStats.GetMaxRTT().Milliseconds()
+		stats["min_rtt"] = r.NetworkStats.GetMinRTT().Milliseconds()
 	}
 
 	return stats
@@ -200,8 +172,12 @@ type LockStepConfig struct {
 // DefaultLockStepConfig 默认帧同步配置
 func DefaultLockStepConfig() LockStepConfig {
 	return LockStepConfig{
-		KcpConfig: kcp2k.NewKcpConfig(kcp2k.WithDualMode(false),
-			kcp2k.WithInterval(1)),
+		KcpConfig: kcp2k.NewKcpConfig(
+			kcp2k.WithNoDelay(true),
+			kcp2k.WithInterval(10),
+			kcp2k.WithFastResend(2),
+			kcp2k.WithCongestionWindow(false),
+			kcp2k.WithDualMode(false)),
 		RoomConfig:  DefaultRoomConfig(),
 		ServerPort:  8888,
 		LogLevel:    "info",

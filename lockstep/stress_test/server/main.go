@@ -6,6 +6,7 @@ import (
 	"log"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -169,6 +170,7 @@ func main() {
 			select {
 			case <-ticker.C:
 				stats := server.GetServerStats()
+				logger.Println(strings.Repeat("=", 80))
 				logger.Printf("[SERVER-STATS] %+v", stats)
 
 				// 显示房间状态统计

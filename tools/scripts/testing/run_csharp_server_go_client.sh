@@ -49,19 +49,18 @@ cleanup() {
 # 设置信号处理
 trap cleanup EXIT INT TERM
 
+# 清理可能占用的端口
+echo "Cleaning up ports..."
+lsof -ti:$PORT | xargs -r kill -9 2>/dev/null || true
+sleep 1
+
 # 检查端口是否被占用
-if lsof -Pi :$PORT -sTCP:LISTEN -t >/dev/null 2>&1; then
-    echo "Error: Port $PORT is already in use"
+if lsof -i UDP:$PORT -t >/dev/null 2>&1; then
+    echo "Error: Port $PORT is still in use after cleanup"
     exit 1
 fi
 
-echo "Step 1: Building C# server..."
-if ! dotnet build tests/csharp_server_go_client/CSharpServer.csproj --configuration Release; then
-    echo "Error: Failed to build C# server"
-    exit 1
-fi
-echo "✓ C# server built successfully"
-echo "\nStep 2: Building Go client..."
+echo "Step 1: Building Go client..."
 cd tests/csharp_server_go_client
 if ! go build -o go_client go_client.go; then
     echo "Error: Failed to build Go client"
@@ -70,16 +69,23 @@ fi
 echo "✓ Go client built successfully"
 cd ..
 
-echo "Step 3: Starting C# server..."
+echo "Step 2: Building C# server..."
 cd "$PROJECT_ROOT/tests/csharp_server_go_client"
-dotnet run --project CSharpServer.csproj --configuration Release -- $PORT > "$PROJECT_ROOT/${SERVER_LOG}" 2>&1 &
+if ! dotnet build --configuration Release; then
+    echo "Error: Failed to build C# server"
+    exit 1
+fi
+echo "✓ C# server built successfully"
+
+echo "Starting C# server..."
+dotnet bin/Release/net8.0/CSharpServer.dll $PORT > "$PROJECT_ROOT/$SERVER_LOG" 2>&1 &
 SERVER_PID=$!
 echo "C# server started (PID: $SERVER_PID)"
 cd "$PROJECT_ROOT"
 
 # 等待服务器启动
 echo "Waiting for server to start..."
-sleep 3
+sleep 5
 
 # 检查服务器是否正在运行
 if ! kill -0 $SERVER_PID 2>/dev/null; then
@@ -90,7 +96,7 @@ fi
 
 # 检查端口是否监听
 for i in {1..10}; do
-    if lsof -Pi :$PORT -sTCP:LISTEN -t >/dev/null 2>&1; then
+    if lsof -i UDP:$PORT -t >/dev/null 2>&1; then
         echo "✓ Server is listening on port $PORT"
         break
     fi
@@ -103,7 +109,7 @@ done
 
 echo "\nStep 4: Running Go client tests..."
 cd "$PROJECT_ROOT/tests/csharp_server_go_client"
-./go_client --host 127.0.0.1 --port $PORT --auto > "$PROJECT_ROOT/${CLIENT_LOG}" 2>&1
+./go_client --host 127.0.0.1 --port $PORT --auto > "$PROJECT_ROOT/$CLIENT_LOG" 2>&1
 CLIENT_EXIT_CODE=$?
 echo "Go client finished (exit code: $CLIENT_EXIT_CODE)"
 cd "$PROJECT_ROOT"
