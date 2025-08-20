@@ -11,16 +11,25 @@ type NetworkStats struct {
 	lostPackets   uint64
 	bytesReceived uint64
 	bytesSent     uint64
-	latencySum    time.Duration
-	latencyCount  uint64
-	maxLatency    time.Duration
-	minLatency    time.Duration
+
+	// 网络延迟统计
+	latencySum   time.Duration
+	latencyCount uint64
+	maxLatency   time.Duration
+	minLatency   time.Duration
 
 	// 输入延时统计
 	inputLatencySum   time.Duration
 	inputLatencyCount uint64
 	maxInputLatency   time.Duration
 	minInputLatency   time.Duration
+
+	// Jitter统计
+	jitterSum    time.Duration
+	jitterCount  uint64
+	maxJitter    time.Duration
+	minJitter    time.Duration
+	lastRecvTime time.Time
 
 	mutex sync.RWMutex
 }
@@ -165,22 +174,94 @@ func (ns *NetworkStats) IncrementInputLatencyStats(inputLatency time.Duration) {
 	}
 }
 
+// GetAverageJitter 获取平均抖动
+func (ns *NetworkStats) GetAverageJitter() time.Duration {
+	ns.mutex.RLock()
+	defer ns.mutex.RUnlock()
+	if ns.jitterCount == 0 {
+		return 0
+	}
+	return ns.jitterSum / time.Duration(ns.jitterCount)
+}
+
+// GetMaxJitter 获取最大抖动
+func (ns *NetworkStats) GetMaxJitter() time.Duration {
+	ns.mutex.RLock()
+	defer ns.mutex.RUnlock()
+	return ns.maxJitter
+}
+
+// GetMinJitter 获取最小抖动
+func (ns *NetworkStats) GetMinJitter() time.Duration {
+	ns.mutex.RLock()
+	defer ns.mutex.RUnlock()
+	return ns.minJitter
+}
+
+// GetJitterCount 获取抖动样本数量
+func (ns *NetworkStats) GetJitterCount() uint64 {
+	ns.mutex.RLock()
+	defer ns.mutex.RUnlock()
+	return ns.jitterCount
+}
+
+// UpdateJitterStats 基于期望间隔更新抖动统计信息
+// 抖动（Jitter）：连续帧收包时间间隔的不稳定差异（即实际到达间隔 vs. 期望间隔）
+// expectedInterval: 期望的帧间隔时间（如30fps对应33.33ms，20fps对应50ms）
+func (ns *NetworkStats) UpdateJitterStats(recvTime time.Time, expectedInterval time.Duration) {
+	ns.mutex.Lock()
+	defer ns.mutex.Unlock()
+
+	// 如果这不是第一个包，计算抖动
+	if !ns.lastRecvTime.IsZero() {
+		// 计算当前包间隔
+		currentInterval := recvTime.Sub(ns.lastRecvTime)
+
+		// 计算抖动（当前间隔与期望间隔的差值的绝对值）
+		jitter := currentInterval - expectedInterval
+		if jitter < 0 {
+			jitter = -jitter
+		}
+
+		// 更新抖动统计
+		ns.jitterSum += jitter
+		ns.jitterCount++
+		if jitter > ns.maxJitter {
+			ns.maxJitter = jitter
+		}
+		if jitter < ns.minJitter || ns.minJitter == 0 {
+			ns.minJitter = jitter
+		}
+	}
+
+	// 更新最后接收时间
+	ns.lastRecvTime = recvTime
+}
+
 // Reset 重置网络统计信息
 func (ns *NetworkStats) Reset() {
 	ns.mutex.Lock()
 	defer ns.mutex.Unlock()
+
 	ns.totalPackets = 0
 	ns.lostPackets = 0
 	ns.bytesReceived = 0
 	ns.bytesSent = 0
+
 	ns.latencySum = 0
 	ns.latencyCount = 0
 	ns.maxLatency = 0
 	ns.minLatency = 0
 
-	// 重置输入延时统计
 	ns.inputLatencySum = 0
 	ns.inputLatencyCount = 0
 	ns.maxInputLatency = 0
 	ns.minInputLatency = 0
+
+	ns.jitterSum = 0
+	ns.jitterCount = 0
+	ns.maxJitter = 0
+	ns.minJitter = 0
+
+	ns.lastRecvTime = time.Time{}
 }

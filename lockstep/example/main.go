@@ -79,7 +79,7 @@ func runServer() {
 
 	// 启动状态监控
 	go func() {
-		ticker := time.NewTicker(time.Second * 10)
+		ticker := time.NewTicker(time.Second * 5)
 		defer ticker.Stop()
 
 		for {
@@ -189,9 +189,12 @@ func runClient() {
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
 
+	// 客户端帧率
+	frameInterval := time.Duration(1000/30) * time.Millisecond // (30帧)
+
 	// 启动输入模拟
 	go func() {
-		ticker := time.NewTicker(time.Millisecond * 33) // 每33ms发送一次输入 (30帧)
+		ticker := time.NewTicker(frameInterval)
 		defer ticker.Stop()
 
 		inputCounter := 0
@@ -253,12 +256,19 @@ func runClient() {
 					minInputLatency := client.NetworkStats.GetMinInputLatency()
 					inputLatencyCount := client.NetworkStats.GetInputLatencyCount()
 
+					avgJitter := client.NetworkStats.GetAverageJitter()
+					maxJitter := client.NetworkStats.GetMaxJitter()
+					minJitter := client.NetworkStats.GetMinJitter()
+					jitterCount := client.NetworkStats.GetJitterCount()
+
 					log.Printf("[Player %d] NetworkStats - Packets: Total=%d packets, Lost=%d packets, Bytes: Recv=%d bytes, Sent=%d bytes",
 						playerID, totalPackets, lostPackets, bytesReceived, bytesSent)
 					log.Printf("[Player %d] NetworkStats - Latency: Avg=%dms, Max=%dms, Min=%dms",
 						playerID, avgLatency.Milliseconds(), maxLatency.Milliseconds(), minLatency.Milliseconds())
 					log.Printf("[Player %d] NetworkStats - InputLatency: Count=%d, Avg=%dms, Max=%dms, Min=%dms",
 						playerID, inputLatencyCount, avgInputLatency.Milliseconds(), maxInputLatency.Milliseconds(), minInputLatency.Milliseconds())
+					log.Printf("[Player %d] NetworkStats - Jitter: Count=%d, Avg=%dms, Max=%dms, Min=%dms",
+						playerID, jitterCount, avgJitter.Milliseconds(), maxJitter.Milliseconds(), minJitter.Milliseconds())
 				}
 			case <-sigChan:
 				return
@@ -268,7 +278,7 @@ func runClient() {
 
 	// 启动PopFrame示例 - 主动获取帧数据
 	go func() {
-		ticker := time.NewTicker(time.Millisecond * 10) // 每10ms检查一次
+		ticker := time.NewTicker(frameInterval)
 		defer ticker.Stop()
 
 		for {
@@ -289,7 +299,7 @@ func runClient() {
 
 	// 启动Ping测试
 	go func() {
-		ticker := time.NewTicker(time.Second * 3)
+		ticker := time.NewTicker(time.Second * 2)
 		defer ticker.Stop()
 
 		for {

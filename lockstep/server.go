@@ -246,6 +246,12 @@ func (s *LockStepServer) processFrame(room *Room) {
 		room.FrameStats.mutex.Unlock()
 	}
 
+	// 更新服务端Jitter统计 - 基于期望帧间隔
+	if room.NetworkStats != nil {
+		expectedInterval := time.Duration(1000/room.Config.FrameRate) * time.Millisecond
+		room.NetworkStats.UpdateJitterStats(frameStartTime, expectedInterval)
+	}
+
 	// 创建新帧
 	frameID := room.CurrentFrameID + 1
 	frame := &Frame{
@@ -831,6 +837,12 @@ func (s *LockStepServer) GetServerStats() map[string]interface{} {
 	inputLatencyCount := 0
 	minInputLatency = time.Hour // 初始化为很大的值
 
+	// 汇总Jitter统计信息
+	var jitterSum time.Duration
+	var maxJitter, minJitter time.Duration
+	jitterCount := 0
+	minJitter = time.Hour // 初始化为很大的值
+
 	// 计算总玩家数
 	totalPlayers := 0
 
@@ -875,6 +887,16 @@ func (s *LockStepServer) GetServerStats() map[string]interface{} {
 			if netStats.minInputLatency < minInputLatency && netStats.minInputLatency > 0 {
 				minInputLatency = netStats.minInputLatency
 			}
+
+			// Jitter统计
+			jitterSum += netStats.jitterSum
+			jitterCount += int(netStats.jitterCount)
+			if netStats.maxJitter > maxJitter {
+				maxJitter = netStats.maxJitter
+			}
+			if netStats.minJitter < minJitter && netStats.minJitter > 0 {
+				minJitter = netStats.minJitter
+			}
 			netStats.mutex.RUnlock()
 		}
 	}
@@ -909,6 +931,18 @@ func (s *LockStepServer) GetServerStats() map[string]interface{} {
 		minInputLatencyMs = minInputLatency.Milliseconds()
 	}
 
+	// 计算平均Jitter
+	avgJitter := float64(0)
+	if jitterCount > 0 {
+		avgJitter = float64(jitterSum.Nanoseconds()) / float64(jitterCount) / 1e6 // 转换为毫秒
+	}
+
+	// 处理最小Jitter
+	minJitterMs := int64(0)
+	if minJitter != time.Hour && minJitter > 0 {
+		minJitterMs = minJitter.Milliseconds()
+	}
+
 	// 计算运行时间
 	uptime := time.Since(s.startTime).Milliseconds()
 
@@ -937,6 +971,12 @@ func (s *LockStepServer) GetServerStats() map[string]interface{} {
 			"avg_input_latency":   avgInputLatency,
 			"max_input_latency":   maxInputLatency.Milliseconds(),
 			"min_input_latency":   minInputLatencyMs,
+		},
+		"jitter_stats": map[string]interface{}{
+			"jitter_count": jitterCount,
+			"avg_jitter":   avgJitter,
+			"max_jitter":   maxJitter.Milliseconds(),
+			"min_jitter":   minJitterMs,
 		},
 	}
 }

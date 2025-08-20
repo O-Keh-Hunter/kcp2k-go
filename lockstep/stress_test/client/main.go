@@ -62,6 +62,13 @@ type ClientMetrics struct {
 	MinInputLatency     time.Duration // 最小输入延时
 	AverageInputLatency time.Duration // 平均输入延时
 
+	// Jitter统计
+	JitterCount   int64         // Jitter样本数量
+	TotalJitter   time.Duration // 总Jitter时间
+	MaxJitter     time.Duration // 最大Jitter
+	MinJitter     time.Duration // 最小Jitter
+	AverageJitter time.Duration // 平均Jitter
+
 	StartTime time.Time
 	mutex     sync.RWMutex
 }
@@ -318,6 +325,7 @@ func (sc *StressClient) collectDetailedStats() {
 		sc.metrics.MaxLatency = networkStats.GetMaxLatency()
 		sc.metrics.MinLatency = networkStats.GetMinLatency()
 
+		// 收集输入延迟统计
 		sc.metrics.InputLatencyCount += int64(networkStats.GetInputLatencyCount())
 		sc.metrics.TotalInputLatency += networkStats.GetAverageInputLatency() * time.Duration(networkStats.GetInputLatencyCount())
 		if networkStats.GetMaxInputLatency() > sc.metrics.MaxInputLatency {
@@ -325,6 +333,22 @@ func (sc *StressClient) collectDetailedStats() {
 		}
 		if networkStats.GetMinInputLatency() < sc.metrics.MinInputLatency || sc.metrics.MinInputLatency == 0 {
 			sc.metrics.MinInputLatency = networkStats.GetMinInputLatency()
+		}
+
+		// 收集Jitter统计
+		if networkStats.GetJitterCount() > 0 {
+			sc.metrics.JitterCount += int64(networkStats.GetJitterCount())
+			sc.metrics.TotalJitter += networkStats.GetAverageJitter() * time.Duration(networkStats.GetJitterCount())
+			if networkStats.GetMaxJitter() > sc.metrics.MaxJitter {
+				sc.metrics.MaxJitter = networkStats.GetMaxJitter()
+			}
+			if networkStats.GetMinJitter() < sc.metrics.MinJitter || sc.metrics.MinJitter == 0 {
+				sc.metrics.MinJitter = networkStats.GetMinJitter()
+			}
+			// 计算平均Jitter
+			if sc.metrics.JitterCount > 0 {
+				sc.metrics.AverageJitter = sc.metrics.TotalJitter / time.Duration(sc.metrics.JitterCount)
+			}
 		}
 
 		sc.metrics.mutex.Unlock()
@@ -490,6 +514,14 @@ func main() {
 				metrics.MinInputLatency.Round(time.Millisecond),
 			)
 
+			// Jitter统计信息
+			logger.Printf("[JITTER] Count: %d, Avg: %v, Max: %v, Min: %v",
+				metrics.JitterCount,
+				metrics.AverageJitter.Round(time.Millisecond),
+				metrics.MaxJitter.Round(time.Millisecond),
+				metrics.MinJitter.Round(time.Millisecond),
+			)
+
 			metrics.mutex.RUnlock()
 		}
 	}()
@@ -577,6 +609,12 @@ func main() {
 	logger.Printf("[FINAL STATS] Average input latency: %v", metrics.AverageInputLatency.Round(time.Millisecond))
 	logger.Printf("[FINAL STATS] Max input latency: %v", metrics.MaxInputLatency.Round(time.Millisecond))
 	logger.Printf("[FINAL STATS] Min input latency: %v", metrics.MinInputLatency.Round(time.Millisecond))
+
+	// Jitter统计
+	logger.Printf("[FINAL STATS] Jitter samples: %d", metrics.JitterCount)
+	logger.Printf("[FINAL STATS] Average jitter: %v", metrics.AverageJitter.Round(time.Millisecond))
+	logger.Printf("[FINAL STATS] Max jitter: %v", metrics.MaxJitter.Round(time.Millisecond))
+	logger.Printf("[FINAL STATS] Min jitter: %v", metrics.MinJitter.Round(time.Millisecond))
 
 	if totalTime.Seconds() > 0 {
 		logger.Printf("[FINAL STATS] Input rate: %.2f inputs/sec", float64(metrics.TotalInputsSent)/totalTime.Seconds())

@@ -206,7 +206,7 @@ func (c *LockStepClient) JoinRoom(roomID RoomID) error {
 		Payload: joinPayload,
 	}
 
-	c.sendMessage(joinMsg)
+	c.sendMessage(joinMsg, kcp2k.KcpReliable)
 	return nil
 }
 
@@ -234,7 +234,7 @@ func (c *LockStepClient) SendInput(inputData []byte, inputFlag InputMessage_Inpu
 		Payload: inputPayload,
 	}
 
-	c.sendMessage(inputMsg)
+	c.sendMessage(inputMsg, kcp2k.KcpReliable)
 	return nil
 }
 
@@ -262,7 +262,7 @@ func (c *LockStepClient) RequestFrames(startFrameID, count uint32) error {
 		Payload: reqPayload,
 	}
 
-	c.sendMessage(reqMsg)
+	c.sendMessage(reqMsg, kcp2k.KcpReliable)
 	return nil
 }
 
@@ -284,19 +284,19 @@ func (c *LockStepClient) SendPing() error {
 		Payload: pingPayload,
 	}
 
-	c.sendMessage(lockStepMsg)
+	c.sendMessage(lockStepMsg, kcp2k.KcpUnreliable)
 	return nil
 }
 
 // sendMessage 发送消息
-func (c *LockStepClient) sendMessage(msg *LockStepMessage) {
+func (c *LockStepClient) sendMessage(msg *LockStepMessage, channel kcp2k.KcpChannel) {
 	msgData, err := proto.Marshal(msg)
 	if err != nil {
 		c.logger.Printf("Failed to marshal message: %v", err)
 		return
 	}
 
-	c.kcpClient.Send(msgData, kcp2k.KcpReliable)
+	c.kcpClient.Send(msgData, channel)
 
 	// 更新网络统计信息（发送数据）
 	c.IncrementNetworkStats(0, 1, 0, uint64(len(msgData)), false, 0)
@@ -396,7 +396,6 @@ func (c *LockStepClient) handleMessage(msg *LockStepMessage) {
 		c.handlePlayerState(msg.Payload)
 	case LockStepMessage_ROOM_STATE:
 		c.handleRoomState(msg.Payload)
-
 	case LockStepMessage_ERROR:
 		c.handleError(msg.Payload)
 	default:
@@ -414,6 +413,15 @@ func (c *LockStepClient) handleFrame(payload []byte) {
 	}
 
 	frameStartTime := time.Now()
+
+	// 基于RecvTickMS计算Jitter统计
+	if frame.RecvTickMs > 0 {
+		// 将RecvTickMS转换为时间
+		recvTime := time.Unix(0, int64(frame.RecvTickMs)*int64(time.Millisecond))
+		// 计算期望的帧间隔（基于配置的帧率）
+		expectedInterval := time.Duration(1000/c.config.RoomConfig.FrameRate) * time.Millisecond
+		c.NetworkStats.UpdateJitterStats(recvTime, expectedInterval)
+	}
 
 	c.mutex.Lock()
 	c.frameBuffer[FrameID(frame.FrameId)] = &frame
