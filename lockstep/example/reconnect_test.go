@@ -203,9 +203,19 @@ func (rt *ReconnectTest) joinRoom() error {
 		return fmt.Errorf("client1 join room failed: %v", err)
 	}
 
+	// 客户端1准备状态
+	if err := rt.client1.SendReady(true); err != nil {
+		return fmt.Errorf("client1 send ready failed: %v", err)
+	}
+
 	// 客户端2加入房间
 	if err := rt.client2.JoinRoom(string(rt.roomID)); err != nil {
 		return fmt.Errorf("client2 join room failed: %v", err)
+	}
+
+	// 客户端2准备状态
+	if err := rt.client2.SendReady(true); err != nil {
+		return fmt.Errorf("client2 send ready failed: %v", err)
 	}
 
 	// 等待房间准备
@@ -341,6 +351,11 @@ func (rt *ReconnectTest) simulateReconnect() error {
 	// 重新加入房间（这里会触发重连逻辑）
 	if err := client1.JoinRoom(string(rt.roomID)); err != nil {
 		return fmt.Errorf("client1 rejoin room failed: %v", err)
+	}
+
+	// 重新准备状态
+	if err := client1.SendReady(true); err != nil {
+		return fmt.Errorf("client1 send ready failed: %v", err)
 	}
 
 	// 等待游戏开始消息，确保帧状态已恢复
