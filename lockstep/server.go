@@ -215,7 +215,7 @@ func (s *LockStepServer) processFrame(room *Room) {
 	room.Mutex.Lock()
 	defer room.Mutex.Unlock()
 
-	if room.State.Status != uint32(RoomStatusRunning) {
+	if room.State.Status != RoomStatus_ROOM_STATUS_RUNNING {
 		return
 	}
 
@@ -389,7 +389,7 @@ func (s *LockStepServer) broadcastPlayerState(room *Room, playerID PlayerID, sta
 	}
 
 	s.broadcastToRoom(room, msg)
-	Log.Info("Room %s: Broadcasted player %d state change: %s", room.ID, playerID, reason)
+	Log.Debug("Room %s: Broadcasted player %d state change: %s", room.ID, playerID, reason)
 }
 
 // broadcastRoomState 广播房间状态变更
@@ -414,7 +414,7 @@ func (s *LockStepServer) broadcastRoomState(room *Room, reason string) {
 	}
 
 	s.broadcastToRoom(room, msg)
-	Log.Info("Room %s: Broadcasted room state change: %s", room.ID, reason)
+	Log.Debug("Room %s: Broadcasted room state change: %s", room.ID, reason)
 }
 
 // sendError 发送错误消息给指定连接
@@ -443,7 +443,7 @@ func (s *LockStepServer) sendError(room *Room, connectionID int, errorCode uint3
 	}
 
 	room.KcpServer.Send(connectionID, msgData, kcp2k.KcpReliable)
-	Log.Error("Sent error %d to connection %d: %s", errorCode, connectionID, message)
+	Log.Debug("Sent error %d to connection %d: %s", errorCode, connectionID, message)
 }
 
 // broadcastError 广播错误消息给房间内所有玩家
@@ -466,12 +466,12 @@ func (s *LockStepServer) broadcastError(room *Room, errorCode uint32, message st
 	}
 
 	s.broadcastToRoom(room, msg)
-	Log.Error("Room %s: Broadcasted error %d: %s", room.ID, errorCode, message)
+	Log.Debug("Room %s: Broadcasted error %d: %s", room.ID, errorCode, message)
 }
 
 // KCP回调函数
 func (s *LockStepServer) onRoomConnected(room *Room, connectionID int) {
-	Log.Error("Room %s: Connection %d established", room.ID, connectionID)
+	Log.Debug("Room %s: Connection %d established", room.ID, connectionID)
 }
 
 func (s *LockStepServer) onRoomData(room *Room, connectionID int, data []byte, channel kcp2k.KcpChannel) {
@@ -533,6 +533,9 @@ func (s *LockStepServer) onRoomDisconnected(room *Room, connectionID int) {
 
 		// 广播玩家离线状态给房间内的其他玩家
 		s.broadcastPlayerState(room, disconnectedPlayer.ID, disconnectedPlayer.State, "Player disconnected")
+
+		// 更新房间状态，检查是否所有玩家都离线
+		s.rooms.UpdateRoomStatus(room, s)
 	}
 }
 
@@ -556,6 +559,8 @@ func (s *LockStepServer) handleRoomMessage(room *Room, connectionID int, msg *Lo
 		s.handlePlayerInput(room, connectionID, msg.Payload)
 	case LockStepMessage_FRAME_REQ:
 		s.handleFrameRequest(room, connectionID, msg.Payload)
+	case LockStepMessage_READY:
+		s.handlePlayerReady(room, connectionID, msg.Payload)
 	default:
 		Log.Error("Room %s: Unknown message type %d from connection %d", room.ID, msg.Type, connectionID)
 	}
@@ -604,6 +609,49 @@ func (s *LockStepServer) handleInput(room *Room, player *Player, frameID FrameID
 		player.InputBuffer[frameID] = []*InputMessage{input}
 	}
 	player.Mutex.Unlock()
+}
+
+// handlePlayerReady 处理玩家准备状态
+func (s *LockStepServer) handlePlayerReady(room *Room, connectionID int, payload []byte) {
+	// 通过房间查找玩家
+	room.Mutex.RLock()
+	var player *Player
+	for _, p := range room.Players {
+		if p.ConnectionID == connectionID {
+			player = p
+			break
+		}
+	}
+	room.Mutex.RUnlock()
+
+	if player == nil {
+		Log.Error("Room %s: Player not found for connection %d", room.ID, connectionID)
+		return
+	}
+
+	// 解析Ready消息
+	var readyMsg ReadyMessage
+	err := proto.Unmarshal(payload, &readyMsg)
+	if err != nil {
+		Log.Error("Room %s: Failed to unmarshal ready message: %v", room.ID, err)
+		return
+	}
+
+	// 验证玩家ID是否匹配
+	if readyMsg.PlayerId != uint32(player.ID) {
+		Log.Error("Room %s: Player ID mismatch in ready message: expected %d, got %d", room.ID, player.ID, readyMsg.PlayerId)
+		return
+	}
+
+	// 更新玩家准备状态
+	player.Mutex.Lock()
+	player.Ready = readyMsg.Ready
+	player.Mutex.Unlock()
+
+	Log.Debug("Room %s: Player %d ready status changed to %v", room.ID, player.ID, readyMsg.Ready)
+
+	// 通过更新房间状态来触发游戏开始检查
+	s.rooms.UpdateRoomStatus(room, s)
 }
 
 // handleFrameRequest 处理补帧请求
@@ -663,7 +711,7 @@ func (s *LockStepServer) logMissingFrames(room *Room, req *FrameRequest, missing
 	if len(missingFrames) > 0 {
 		startFrameID := FrameID(req.FrameId)
 		endFrameID := FrameID(req.FrameId + req.Count - 1)
-		Log.Error("Room %s: Missing frames in request range %d-%d: %v (total missing: %d)",
+		Log.Debug("Room %s: Missing frames in request range %d-%d: %v (total missing: %d)",
 			room.ID, startFrameID, endFrameID, missingFrames, len(missingFrames))
 	}
 }
@@ -672,7 +720,7 @@ func (s *LockStepServer) logMissingFrames(room *Room, req *FrameRequest, missing
 func (s *LockStepServer) logFrameRequestInfo(room *Room, req *FrameRequest, foundFrames int) {
 	startFrameID := FrameID(req.FrameId)
 	endFrameID := FrameID(req.FrameId + req.Count - 1)
-	Log.Error("Room %s: Sending frame response, requested range: %d-%d, found frames: %d",
+	Log.Debug("Room %s: Sending frame response, requested range: %d-%d, found frames: %d",
 		room.ID, startFrameID, endFrameID, foundFrames)
 }
 
@@ -747,13 +795,11 @@ func (s *LockStepServer) handleJoinRoomError(room *Room, connectionID int, err e
 
 // sendJoinRoomSuccess 发送加入房间成功响应
 func (s *LockStepServer) sendJoinRoomSuccess(room *Room, connectionID int) {
-	room.Mutex.RLock()
 	roomStateMsg := RoomStateMessage{
 		RoomId: string(room.ID),
 		State:  room.State,
 		Reason: "Player joined room",
 	}
-	room.Mutex.RUnlock()
 
 	stateData, err := proto.Marshal(&roomStateMsg)
 	if err != nil {

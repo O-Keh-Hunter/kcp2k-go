@@ -1,6 +1,7 @@
 package kcp2k
 
 import (
+	"io"
 	"net"
 	"sync"
 	"time"
@@ -136,6 +137,10 @@ func (s *KcpServer) rawReceiveFrom() ([]byte, *net.UDPAddr, bool) {
 
 	n, addr, err := s.conn.ReadFromUDP(s.recvBuf)
 	if err != nil {
+		if err == io.EOF {
+			return nil, nil, false
+		}
+
 		// 只在非超时错误时记录
 		if !isTimeoutError(err) {
 			Log.Error("[KCP] Server: ReadFromUDP error: %v", err)
@@ -144,9 +149,6 @@ func (s *KcpServer) rawReceiveFrom() ([]byte, *net.UDPAddr, bool) {
 	}
 	if n <= 0 {
 		return nil, nil, false
-	}
-	if n > 0 {
-
 	}
 	buf := make([]byte, n)
 	copy(buf, s.recvBuf[:n])

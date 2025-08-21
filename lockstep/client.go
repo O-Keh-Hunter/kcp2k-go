@@ -138,7 +138,7 @@ func (c *LockStepClient) Connect(serverAddress string, port uint16) error {
 		}
 	}()
 
-	Log.Info("Connecting to server %s:%d", serverAddress, port)
+	Log.Debug("Connecting to server %s:%d", serverAddress, port)
 	return nil
 }
 
@@ -166,7 +166,7 @@ func (c *LockStepClient) Disconnect() {
 	if kcpClient != nil {
 		kcpClient.Disconnect()
 	}
-	Log.Info("Disconnected from server")
+	Log.Debug("Disconnected from server")
 }
 
 // JoinRoom 加入房间
@@ -221,6 +221,37 @@ func (c *LockStepClient) SendInput(inputData []byte, inputFlag InputMessage_Inpu
 	}
 
 	c.sendMessage(inputMsg, kcp2k.KcpReliable)
+	return nil
+}
+
+// SendReady 发送玩家准备状态
+func (c *LockStepClient) SendReady(ready bool) error {
+	c.mutex.Lock()
+	defer c.mutex.Unlock()
+
+	if !c.connected {
+		return fmt.Errorf("client is not connected")
+	}
+
+	// 创建准备消息
+	readyMsg := ReadyMessage{
+		PlayerId: uint32(c.playerID),
+		Ready:    ready,
+		RoomId:   string(c.roomID),
+	}
+
+	readyPayload, err := proto.Marshal(&readyMsg)
+	if err != nil {
+		return fmt.Errorf("failed to marshal ready message: %v", err)
+	}
+
+	msg := &LockStepMessage{
+		Type:    LockStepMessage_READY,
+		Payload: readyPayload,
+	}
+
+	c.sendMessage(msg, kcp2k.KcpReliable)
+	Log.Debug("[Player %d] Sent ready status: %v", c.playerID, ready)
 	return nil
 }
 
@@ -283,8 +314,7 @@ func (c *LockStepClient) onConnected() {
 	c.connected = true
 	c.mutex.Unlock()
 
-	Log.Info("[LockStepClient] Connected to server")
-	Log.Debug("[LockStepClient] Logger test - PlayerID: %d", c.playerID)
+	Log.Debug("[LockStepClient] Connected to server - PlayerID: %d", c.playerID)
 	if c.onConnectedCallback != nil {
 		c.onConnectedCallback()
 	}
@@ -312,7 +342,7 @@ func (c *LockStepClient) onDisconnected() {
 	if c.connected {
 		c.connected = false
 		c.running = false
-		Log.Info("Disconnected from server")
+		Log.Debug("Disconnected from server")
 	}
 	c.mutex.Unlock()
 	if c.onDisconnectedCallback != nil {
@@ -504,7 +534,7 @@ func (c *LockStepClient) handleFrameResponse(payload []byte) {
 
 // handleGameStart 处理游戏开始
 func (c *LockStepClient) handleGameStart(payload []byte) {
-	Log.Info("Game started")
+	Log.Debug("Game started")
 
 	// 设置running状态为true
 	if !c.running {
@@ -547,30 +577,20 @@ func (c *LockStepClient) handlePlayerState(payload []byte) {
 		return
 	}
 
-	// 注释掉的日志：Player %d state changed: online=%v, lastFrame=%d, ping=%dms, reason: %s
-	// 	playerStateMsg.PlayerId,
-	// 	playerStateMsg.State.Online,
-	// 	playerStateMsg.State.LastFrameId,
-	// 	playerStateMsg.State.Ping,
-	// 	playerStateMsg.Reason
-
-	// 如果是其他玩家的状态变更，触发相应的回调
-	if PlayerID(playerStateMsg.PlayerId) != c.playerID {
-		if playerStateMsg.State.Online {
-			// 玩家加入或重连
-			if c.onPlayerJoined != nil {
-				c.onPlayerJoined(PlayerID(playerStateMsg.PlayerId))
-			}
-		} else {
-			// 玩家离线
-			if c.onPlayerLeft != nil {
-				c.onPlayerLeft(PlayerID(playerStateMsg.PlayerId))
-			}
+	if playerStateMsg.State.Online {
+		// 玩家加入或重连
+		if c.onPlayerJoined != nil {
+			c.onPlayerJoined(PlayerID(playerStateMsg.PlayerId))
+		}
+	} else {
+		// 玩家离线
+		if c.onPlayerLeft != nil {
+			c.onPlayerLeft(PlayerID(playerStateMsg.PlayerId))
 		}
 	}
 
 	// 打印玩家状态变更信息（取消注释以便调试）
-	Log.Info("Player %d state changed: online=%v, reason: %s",
+	Log.Debug("Player %d state changed: online=%v, reason: %s",
 		playerStateMsg.PlayerId,
 		playerStateMsg.State.Online,
 		playerStateMsg.Reason)
@@ -585,7 +605,7 @@ func (c *LockStepClient) handleRoomState(payload []byte) {
 		return
 	}
 
-	Log.Info("Room %s state changed: status=%d, players=%d/%d, currentFrame=%d, reason: %s",
+	Log.Debug("Room %s state changed: status=%d, players=%d/%d, currentFrame=%d, reason: %s",
 		roomStateMsg.RoomId,
 		roomStateMsg.State.Status,
 		roomStateMsg.State.CurrentPlayers,
@@ -595,26 +615,33 @@ func (c *LockStepClient) handleRoomState(payload []byte) {
 
 	// 根据房间状态变更触发相应的回调
 	switch RoomStatus(roomStateMsg.State.Status) {
-	case RoomStatusRunning:
+	case RoomStatus_ROOM_STATUS_IDLE:
+		if c.running {
+			c.mutex.Lock()
+			c.running = false
+			c.mutex.Unlock()
+			Log.Debug("Room is idle - no players")
+		}
+	case RoomStatus_ROOM_STATUS_WAITING:
+		if c.running {
+			c.mutex.Lock()
+			c.running = false
+			c.mutex.Unlock()
+			Log.Debug("Room is waiting - waiting for more players")
+		}
+	case RoomStatus_ROOM_STATUS_RUNNING:
 		if !c.running && c.onGameStarted != nil {
 			c.mutex.Lock()
 			c.running = true
 			c.mutex.Unlock()
 			c.onGameStarted()
 		}
-	case RoomStatusEnded:
+	case RoomStatus_ROOM_STATUS_ENDED:
 		if c.running && c.onGameEnded != nil {
 			c.mutex.Lock()
 			c.running = false
 			c.mutex.Unlock()
 			c.onGameEnded()
-		}
-	case RoomStatusWaiting:
-		if c.running {
-			c.mutex.Lock()
-			c.running = false
-			c.mutex.Unlock()
-			Log.Info("Game paused - waiting for more players")
 		}
 	}
 }

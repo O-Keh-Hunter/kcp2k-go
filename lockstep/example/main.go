@@ -58,6 +58,7 @@ func runServer() {
 	// 创建房间配置
 	roomConfig := lockstep.DefaultRoomConfig()
 	// 使用默认的15帧/秒 (66ms间隔)
+	roomConfig.FrameRate = 30
 	roomConfig.MinPlayers = 2 // 设置为2个玩家即可开始游戏
 	// 显示配置信息
 	log.Printf("Room config: MinPlayers=%d, MaxPlayers=%d, FrameRate=%d",
@@ -129,10 +130,37 @@ func runClient() {
 	// 创建客户端配置 - 使用默认KCP配置进行对比测试
 	config := lockstep.DefaultLockStepConfig()
 
+	var client *lockstep.LockStepClient
 	// 设置回调函数
 	callbacks := lockstep.ClientCallbacks{
+		OnConnected: func() {
+			log.Printf("[Player %d] Successfully connected to server", playerID)
+
+			// 加入房间
+			roomID := lockstep.RoomID("room1")
+			err := client.JoinRoom(roomID)
+			if err != nil {
+				log.Printf("Failed to join room: %v", err)
+			} else {
+				log.Printf("[Player %d] Joined room: %s", playerID, roomID)
+			}
+		},
+		OnDisconnected: func() {
+			log.Printf("[Player %d] Disconnected from server", playerID)
+		},
 		OnPlayerJoined: func(pid lockstep.PlayerID) {
-			log.Printf("[Player %d] Player %d joined", playerID, pid)
+			if pid == playerID {
+				log.Printf("[Player %d] You joined the room", playerID)
+				// 发送准备信号
+				err := client.SendReady(true)
+				if err != nil {
+					log.Printf("[Player %d] Failed to send ready signal: %v", playerID, err)
+				} else {
+					log.Printf("[Player %d] Sent ready signal", playerID)
+				}
+			} else {
+				log.Printf("[Player %d] Player %d joined", playerID, pid)
+			}
 		},
 		OnPlayerLeft: func(pid lockstep.PlayerID) {
 			log.Printf("[Player %d] Player %d left", playerID, pid)
@@ -149,7 +177,7 @@ func runClient() {
 	}
 
 	// 创建客户端
-	client := lockstep.NewLockStepClient(&config, playerID, callbacks)
+	client = lockstep.NewLockStepClient(&config, playerID, callbacks)
 
 	// 注意：在实际应用中，客户端需要先连接到主服务器获取房间信息
 	// 这里为了简化示例，直接连接到指定的房间端口
@@ -162,28 +190,6 @@ func runClient() {
 	}
 
 	log.Printf("[Player %d] Connecting to room server %s:%d", playerID, serverHost, roomPort)
-
-	// 等待连接建立
-	maxWait := 10 * time.Second
-	startTime := time.Now()
-	for !client.IsConnected() && time.Since(startTime) < maxWait {
-		time.Sleep(100 * time.Millisecond)
-	}
-
-	if !client.IsConnected() {
-		log.Fatalf("[Player %d] Failed to connect to server within %v", playerID, maxWait)
-	}
-
-	log.Printf("[Player %d] Successfully connected to server", playerID)
-
-	// 加入房间
-	roomID := lockstep.RoomID("room1")
-	err = client.JoinRoom(roomID)
-	if err != nil {
-		log.Printf("Failed to join room: %v", err)
-	} else {
-		log.Printf("[Player %d] Joined room: %s", playerID, roomID)
-	}
 
 	// 等待中断信号
 	sigChan := make(chan os.Signal, 1)

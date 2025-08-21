@@ -88,6 +88,7 @@ type StressClient struct {
 	stopChan       chan struct{}
 	wg             *sync.WaitGroup
 	connectedCh    chan bool
+	readyedCh      chan bool
 	disconnectedCh chan bool
 }
 
@@ -101,6 +102,7 @@ func NewStressClient(id int, config *ClientConfig, metrics *ClientMetrics, logge
 		stopChan:       make(chan struct{}),
 		wg:             wg,
 		connectedCh:    make(chan bool, 1),
+		readyedCh:      make(chan bool, 1),
 		disconnectedCh: make(chan bool, 1),
 	}
 }
@@ -140,7 +142,17 @@ func (sc *StressClient) run() {
 	// 设置回调函数
 	callbacks := lockstep.ClientCallbacks{
 		OnPlayerJoined: func(pid lockstep.PlayerID) {
-			// 静默处理
+			if pid == playerID {
+				err := sc.client.SendReady(true)
+				if err != nil {
+					sc.logger.Printf("[Client %d] Game started", sc.id)
+				} else {
+					select {
+					case sc.readyedCh <- true:
+					default:
+					}
+				}
+			}
 		},
 		OnPlayerLeft: func(pid lockstep.PlayerID) {
 			// 静默处理
@@ -188,6 +200,8 @@ func (sc *StressClient) run() {
 	case <-sc.connectedCh:
 		atomic.AddInt64(&sc.metrics.ConnectedClients, 1)
 		sc.logger.Printf("[Client %d] Connected successfully", sc.id)
+	case <-sc.readyedCh:
+		sc.logger.Printf("[Client %d] Readyed successfully", sc.id)
 	case <-sc.stopChan:
 		return
 	case <-time.After(maxWait):

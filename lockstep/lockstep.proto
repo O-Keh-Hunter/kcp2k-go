@@ -50,8 +50,16 @@ message PlayerState {
     int64 last_frame_id = 3;
 }
 
+// 房间状态枚举
+enum RoomStatus {
+    ROOM_STATUS_IDLE = 0;    // 房间空闲
+    ROOM_STATUS_WAITING = 1; // 等待玩家
+    ROOM_STATUS_RUNNING = 2; // 游戏进行中
+    ROOM_STATUS_ENDED = 3;   // 游戏结束
+}
+
 message RoomState {
-    uint32 status = 1;
+    RoomStatus status = 1;
     uint32 current_players = 2;
     uint32 max_players = 3;
     int64 start_time = 4;
@@ -90,6 +98,7 @@ message LockStepMessage {
         PLAYER_STATE = 9;
         ROOM_STATE = 10;
         ERROR = 11;
+        READY = 12;
     }
     
     MessageType type = 1;
@@ -121,10 +130,19 @@ message InputMessage {
     InputFlag flag = 4;
 }
 
+// Ready消息
+message ReadyMessage {
+    uint32 player_id = 1;
+    bool ready = 2; // true表示准备就绪，false表示取消准备
+    string room_id = 3;
+}
+
 // 游戏开始消息
 message GameStartMessage {
     uint32 current_frame_id = 1;
     bool game_already_running = 2;
+    uint32 ready_players = 3; // 已准备的玩家数量
+    uint32 min_players = 4; // 需要的最少玩家数量
 }
 
 // 玩家状态消息

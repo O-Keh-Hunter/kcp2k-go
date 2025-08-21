@@ -149,7 +149,6 @@ func TestGetRoomMonitoringInfo_WithPlayers(t *testing.T) {
 			Online:      true,
 			LastFrameId: 5,
 		},
-		LastFrameID: 5,
 		InputBuffer: make(map[FrameID][]*InputMessage),
 	}
 
@@ -160,7 +159,6 @@ func TestGetRoomMonitoringInfo_WithPlayers(t *testing.T) {
 			Online:      false, // 离线玩家
 			LastFrameId: 3,
 		},
-		LastFrameID: 3,
 		InputBuffer: make(map[FrameID][]*InputMessage),
 	}
 

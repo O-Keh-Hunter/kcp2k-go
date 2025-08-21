@@ -67,7 +67,7 @@ func (rm *RoomManager) CreateRoom(roomID RoomID, config *RoomConfig, server *Loc
 		CurrentFrameID: 0,
 		MaxFrameID:     0,
 		State: &RoomState{
-			Status:         uint32(RoomStatusWaiting),
+			Status:         RoomStatus_ROOM_STATUS_IDLE,
 			CurrentPlayers: 0,
 			MaxPlayers:     config.MaxPlayers,
 			StartTime:      0,
@@ -107,7 +107,7 @@ func (rm *RoomManager) CreateRoom(roomID RoomID, config *RoomConfig, server *Loc
 	}
 
 	rm.rooms[roomID] = room
-	Log.Info("Room %s created on port %d", roomID, port)
+	Log.Debug("Room %s created on port %d", roomID, port)
 
 	// 启动房间逻辑
 	go rm.startRoom(room, server)
@@ -177,11 +177,11 @@ func (rm *RoomManager) handlePlayerReconnection(room *Room, playerID PlayerID, c
 	server.broadcastPlayerState(room, playerID, existingPlayer.State, "Player reconnected")
 
 	// 如果游戏正在运行，发送游戏开始消息
-	if room.State.Status == uint32(RoomStatusRunning) {
+	if room.State.Status == RoomStatus_ROOM_STATUS_RUNNING {
 		rm.sendGameStartMessage(room, connectionID, "reconnected", playerID)
 	}
 
-	Log.Info("Player %d reconnected to room %s", playerID, room.ID)
+	Log.Debug("Player %d reconnected to room %s", playerID, room.ID)
 	return nil
 }
 
@@ -197,14 +197,14 @@ func (rm *RoomManager) addNewPlayerToRoom(room *Room, playerID PlayerID, connect
 	server.broadcastPlayerState(room, playerID, player.State, "Player joined room")
 
 	// 如果游戏正在运行，发送游戏开始消息
-	if room.State.Status == uint32(RoomStatusRunning) {
+	if room.State.Status == RoomStatus_ROOM_STATUS_RUNNING {
 		rm.sendGameStartMessage(room, connectionID, "new", playerID)
 	}
 
 	// 更新房间状态
 	rm.updateRoomStatusLocked(room, server)
 
-	Log.Info("Player %d joined room %s (players: %d/%d)", playerID, room.ID, len(room.Players), room.Config.MaxPlayers)
+	Log.Debug("Player %d joined room %s (players: %d/%d)", playerID, room.ID, len(room.Players), room.Config.MaxPlayers)
 	return nil
 }
 
@@ -216,18 +216,8 @@ func (rm *RoomManager) createNewPlayer(playerID PlayerID, connectionID int, room
 		State: &PlayerState{
 			Online: true,
 		},
-		LastFrameID: 0,
 		InputBuffer: make(map[FrameID][]*InputMessage),
 		Mutex:       sync.RWMutex{},
-	}
-
-	// 设置新玩家的LastFrameID
-	if room.State.Status == uint32(RoomStatusRunning) && room.CurrentFrameID > 0 {
-		syncStartFrame := room.CurrentFrameID - 9
-		if syncStartFrame < 1 {
-			syncStartFrame = 1
-		}
-		player.LastFrameID = syncStartFrame - 1
 	}
 
 	return player
@@ -302,7 +292,7 @@ func (rm *RoomManager) stopRoom(room *Room) {
 	// 释放端口
 	rm.portManager.ReleasePort(room.Port)
 
-	Log.Info("Room %s stopped", room.ID)
+	Log.Debug("Room %s stopped", room.ID)
 }
 
 // frameLoop 帧循环
@@ -366,7 +356,7 @@ func (rm *RoomManager) cleanupRooms() {
 		if room, exists := rm.rooms[roomID]; exists {
 			rm.stopRoom(room)
 			delete(rm.rooms, roomID)
-			Log.Info("Room %s cleaned up (empty for %v)", roomID, time.Since(room.CreatedAt))
+			Log.Debug("Room %s cleaned up (empty for %v)", roomID, time.Since(room.CreatedAt))
 		}
 	}
 }
@@ -381,65 +371,68 @@ func (rm *RoomManager) UpdateRoomStatus(room *Room, server *LockStepServer) {
 // updateRoomStatusLocked 内部方法，假设已经持有锁
 func (rm *RoomManager) updateRoomStatusLocked(room *Room, server *LockStepServer) {
 	playerCount := len(room.Players)
-	currentStatus := RoomStatus(room.State.Status)
+	currentStatus := room.State.Status
 
 	// 更新当前玩家数量
 	room.State.CurrentPlayers = uint32(playerCount)
 
-	// 状态转换逻辑
+	// 单向状态转换逻辑: idle -> waiting -> running -> ended
 	switch currentStatus {
-	case RoomStatusWaiting:
-		if playerCount >= int(room.Config.MinPlayers) {
-			// 达到最小玩家数，转为准备状态
-			room.State.Status = uint32(RoomStatusReady)
-			Log.Info("Room %s: Status changed to READY (%d/%d players)", room.ID, playerCount, room.Config.MaxPlayers)
-			server.broadcastRoomState(room, "Room ready to start")
-
-			// 自动开始游戏（可配置延迟）
-			go func() {
-				rm.startGame(room, server)
-			}()
+	case RoomStatus_ROOM_STATUS_IDLE:
+		// 有玩家加入时，从idle转换到waiting
+		if playerCount > 0 {
+			room.State.Status = RoomStatus_ROOM_STATUS_WAITING
+			Log.Debug("Room %s: Status changed to WAITING (players joined: %d)", room.ID, playerCount)
+			server.broadcastRoomState(room, "Players joined, waiting for more")
 		}
 
-	case RoomStatusReady:
-		if playerCount < int(room.Config.MinPlayers) {
-			// 玩家数不足，回到等待状态
-			room.State.Status = uint32(RoomStatusWaiting)
-			Log.Info("Room %s: Status changed to WAITING (insufficient players: %d/%d)", room.ID, playerCount, room.Config.MinPlayers)
-			server.broadcastRoomState(room, "Waiting for more players")
+	case RoomStatus_ROOM_STATUS_WAITING:
+		// 检查是否满足游戏开始条件
+		readyCount := 0
+		for _, player := range room.Players {
+			if player.Ready {
+				readyCount++
+			}
 		}
 
-	case RoomStatusRunning:
-		if playerCount == 0 {
-			// 无玩家，结束游戏
-			room.State.Status = uint32(RoomStatusEnded)
-			Log.Info("Room %s: Game ENDED (no players)", room.ID)
-			server.broadcastRoomState(room, "Game ended - no players")
+		minPlayers := int(room.Config.MinPlayers)
+		if playerCount >= minPlayers && readyCount == playerCount {
+			rm.startGame(room, server, uint32(readyCount), uint32(minPlayers))
 		}
+
+	case RoomStatus_ROOM_STATUS_RUNNING:
+		// 检查是否所有玩家都离线一段时间
+		onlineCount := 0
+		for _, player := range room.Players {
+			if player.State.Online {
+				onlineCount++
+			}
+		}
+		// 如果没有在线玩家，游戏结束
+		if onlineCount == 0 {
+			room.State.Status = RoomStatus_ROOM_STATUS_ENDED
+			room.State.EndTime = time.Now().Unix()
+			Log.Debug("Room %s: Game ENDED (all players offline)", room.ID)
+			server.broadcastRoomState(room, "Game ended - all players offline")
+		}
+
+	case RoomStatus_ROOM_STATUS_ENDED:
+		// 游戏结束状态，不再转换
+		// 房间将由清理机制处理
 	}
 }
 
-// startGame 开始游戏
-func (rm *RoomManager) startGame(room *Room, server *LockStepServer) {
-	room.Mutex.Lock()
-	defer room.Mutex.Unlock()
-
-	// 检查房间状态是否仍为READY
-	if room.State.Status != uint32(RoomStatusReady) {
-		return
-	}
-
-	// 检查玩家数量是否仍满足要求
-	if len(room.Players) < int(room.Config.MinPlayers) {
-		room.State.Status = uint32(RoomStatusWaiting)
-		server.broadcastRoomState(room, "Waiting for more players")
+// startGameInternal 开始游戏
+func (rm *RoomManager) startGame(room *Room, server *LockStepServer, readyPlayers, minPlayers uint32) {
+	// 检查房间状态是否为等待状态
+	if room.State.Status != RoomStatus_ROOM_STATUS_WAITING {
 		return
 	}
 
 	// 开始游戏
-	room.State.Status = uint32(RoomStatusRunning)
+	room.State.Status = RoomStatus_ROOM_STATUS_RUNNING
 	room.State.StartTime = time.Now().Unix()
-	Log.Info("Room %s: Game STARTED with %d players", room.ID, len(room.Players))
+	Log.Debug("Room %s: Game STARTED with %d players (%d ready)", room.ID, len(room.Players), readyPlayers)
 
 	// 广播房间状态变更
 	server.broadcastRoomState(room, "Game started")
@@ -448,6 +441,8 @@ func (rm *RoomManager) startGame(room *Room, server *LockStepServer) {
 	gameStartMsg := GameStartMessage{
 		CurrentFrameId:     0,
 		GameAlreadyRunning: false,
+		ReadyPlayers:       readyPlayers,
+		MinPlayers:         minPlayers,
 	}
 	gameStartPayload, err := proto.Marshal(&gameStartMsg)
 	if err == nil {
@@ -467,7 +462,7 @@ func (rm *RoomManager) RemoveRoom(roomID RoomID) {
 	if room, exists := rm.rooms[roomID]; exists {
 		rm.stopRoom(room)
 		delete(rm.rooms, roomID)
-		Log.Info("Room %s removed", roomID)
+		Log.Debug("Room %s removed", roomID)
 	}
 }
 

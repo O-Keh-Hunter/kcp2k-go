@@ -14,16 +14,6 @@ type FrameID = uint32
 type PlayerID = uint32
 type RoomID = string
 
-// RoomStatus 房间状态枚举
-type RoomStatus uint32
-
-const (
-	RoomStatusWaiting RoomStatus = 0 // 等待玩家
-	RoomStatusReady   RoomStatus = 1 // 准备开始
-	RoomStatusRunning RoomStatus = 2 // 游戏进行中
-	RoomStatusEnded   RoomStatus = 3 // 游戏结束
-)
-
 // 错误码定义
 const (
 	ErrorCodeUnknown             = 1000 // 未知错误
@@ -82,8 +72,8 @@ type Player struct {
 	ID           PlayerID                    `json:"id"`            // 玩家ID
 	ConnectionID int                         `json:"connection_id"` // KCP连接ID
 	State        *PlayerState                `json:"state"`         // 玩家状态（使用 protobuf 结构体）
-	LastFrameID  FrameID                     `json:"last_frame_id"` // 最后接收的帧ID
 	InputBuffer  map[FrameID][]*InputMessage `json:"-"`             // 输入缓冲区
+	Ready        bool                        `json:"ready"`         // 玩家是否准备就绪
 	Mutex        sync.RWMutex                `json:"-"`             // 读写锁
 }
 
