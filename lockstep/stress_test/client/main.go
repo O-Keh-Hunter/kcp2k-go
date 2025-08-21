@@ -167,7 +167,6 @@ func (sc *StressClient) run() {
 			atomic.AddInt64(&sc.metrics.ConnectionErrors, 1)
 			sc.logger.Printf("[Client %d] Error: %v", sc.id, err)
 		},
-		Logger: sc.logger, // 传递logger给LockStepClient
 	}
 
 	// 创建客户端

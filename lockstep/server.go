@@ -3,7 +3,6 @@ package lockstep
 import (
 	"context"
 	"fmt"
-	"log"
 	"math"
 	"net/http"
 	"os"
@@ -25,7 +24,6 @@ type LockStepServer struct {
 	mutex       sync.RWMutex
 	running     bool
 	stopChan    chan struct{}
-	logger      *log.Logger
 
 	// 性能监控字段
 	startTime     time.Time
@@ -49,21 +47,17 @@ func NewLockStepServer(config *LockStepConfig) *LockStepServer {
 		usedPorts:   make(map[uint16]bool),
 	}
 
-	// 创建日志记录器
-	logger := log.New(os.Stdout, "[LockStep] ", log.LstdFlags)
-
 	server := &LockStepServer{
 		config:      *config,
 		mutex:       sync.RWMutex{},
 		running:     false,
 		stopChan:    make(chan struct{}),
-		logger:      logger,
 		portManager: portManager,
 		startTime:   time.Now(),
 	}
 
 	// 创建房间管理器
-	server.rooms = NewRoomManager(portManager, logger, &config.KcpConfig)
+	server.rooms = NewRoomManager(portManager, &config.KcpConfig)
 
 	return server
 }
@@ -104,7 +98,7 @@ func (s *LockStepServer) Start() error {
 	}
 
 	s.running = true
-	s.logger.Printf("LockStep server started")
+	Log.Info("LockStep server started")
 
 	// 启动房间管理器
 	s.rooms.Start()
@@ -135,12 +129,12 @@ func (s *LockStepServer) Stop() {
 	// 停止房间管理器
 	s.rooms.Stop()
 
-	s.logger.Printf("LockStep server stopped")
+	Log.Info("LockStep server stopped")
 }
 
 // GracefulShutdown 优雅关闭服务器
 func (s *LockStepServer) GracefulShutdown(ctx context.Context) error {
-	s.logger.Printf("Starting graceful shutdown...")
+	Log.Info("Starting graceful shutdown...")
 
 	// 创建一个通道来接收关闭完成信号
 	done := make(chan struct{})
@@ -164,16 +158,16 @@ func (s *LockStepServer) GracefulShutdown(ctx context.Context) error {
 		// 停止房间管理器
 		s.rooms.Stop()
 
-		s.logger.Printf("All rooms stopped")
+		Log.Info("All rooms stopped")
 	}()
 
 	// 等待关闭完成或超时
 	select {
 	case <-done:
-		s.logger.Printf("Graceful shutdown completed")
+		Log.Info("Graceful shutdown completed")
 		return nil
 	case <-ctx.Done():
-		s.logger.Printf("Graceful shutdown timeout, forcing stop")
+		Log.Warning("Graceful shutdown timeout, forcing stop")
 		s.Stop()
 		return ctx.Err()
 	}
@@ -185,14 +179,14 @@ func (s *LockStepServer) WaitForShutdown() {
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
 
 	sig := <-sigChan
-	s.logger.Printf("Received signal: %v", sig)
+	Log.Info("Received signal: %v", sig)
 
 	// 创建带超时的上下文
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
 	if err := s.GracefulShutdown(ctx); err != nil {
-		s.logger.Printf("Graceful shutdown failed: %v", err)
+		Log.Error("Graceful shutdown failed: %v", err)
 	}
 }
 
@@ -226,34 +220,45 @@ func (s *LockStepServer) processFrame(room *Room) {
 	}
 
 	frameStartTime := time.Now()
+	frameID := room.CurrentFrameID + 1
 
-	// 记录帧统计
-	if room.FrameStats != nil {
-		room.FrameStats.mutex.Lock()
-		room.FrameStats.totalFrames++
-
-		if !room.FrameStats.lastFrameTime.IsZero() {
-			frameDuration := frameStartTime.Sub(room.FrameStats.lastFrameTime)
-			room.FrameStats.frameTimeSum += frameDuration
-
-			// 检查是否为迟到的帧
-			expectedInterval := time.Duration(1000/room.Config.FrameRate) * time.Millisecond
-			if frameDuration > expectedInterval*110/100 { // 允许10%的误差
-				room.FrameStats.lateFrames++
-			}
-		}
-		room.FrameStats.lastFrameTime = frameStartTime
-		room.FrameStats.mutex.Unlock()
+	// 计算帧间隔和统计信息
+	var frameDuration time.Duration
+	var isLateFrame bool
+	if room.FrameStats != nil && !room.FrameStats.lastFrameTime.IsZero() {
+		frameDuration = frameStartTime.Sub(room.FrameStats.lastFrameTime)
+		expectedInterval := time.Duration(1000/room.Config.FrameRate) * time.Millisecond
+		isLateFrame = frameDuration > expectedInterval*110/100 // 允许10%的误差
 	}
 
-	// 更新服务端Jitter统计 - 基于期望帧间隔
+	// 更新网络抖动统计
 	if room.NetworkStats != nil {
 		expectedInterval := time.Duration(1000/room.Config.FrameRate) * time.Millisecond
 		room.NetworkStats.UpdateJitterStats(frameStartTime, expectedInterval)
 	}
 
-	// 创建新帧
-	frameID := room.CurrentFrameID + 1
+	// 创建新帧并收集输入
+	frame := s.createFrameWithInputs(room, frameID)
+
+	// 判断帧是否为空
+	isEmpty := len(frame.DataCollection) == 0
+
+	// 存储帧数据
+	room.Frames[frameID] = frame
+	room.CurrentFrameID = frameID
+	if frameID > room.MaxFrameID {
+		room.MaxFrameID = frameID
+	}
+
+	// 广播帧数据
+	s.broadcastFrame(room, frame)
+
+	// 更新统计信息
+	s.updateFrameStats(room, frameStartTime, frameDuration, isLateFrame, isEmpty)
+}
+
+// createFrameWithInputs 创建帧并收集玩家输入
+func (s *LockStepServer) createFrameWithInputs(room *Room, frameID FrameID) *Frame {
 	frame := &Frame{
 		FrameId:        uint32(frameID),
 		RecvTickMs:     uint32(time.Now().UnixMilli()),
@@ -262,21 +267,13 @@ func (s *LockStepServer) processFrame(room *Room) {
 	}
 
 	// 收集玩家输入
-	onlinePlayerCount := 0
-	playersWithInput := 0
-	// s.logger.Printf("Room %s: Processing frame %d, collecting inputs...", room.ID, frameID)
 	for playerID, player := range room.Players {
 		player.Mutex.RLock()
-		// 只统计在线玩家
-		if player.State.Online {
-			onlinePlayerCount++
-		}
 
 		if inputList, exists := player.InputBuffer[frameID]; exists && len(inputList) > 0 {
 			// 处理该帧的所有输入消息
 			for _, inputData := range inputList {
-				// s.logger.Printf("Room %s: Frame %d found input from player %d, seq %d", room.ID, frameID, playerID, inputData.SequenceId)
-				// 计算输入延迟：当前时间 - 输入时间戳
+				// 计算输入延迟
 				delayMs := uint32(time.Now().UnixMilli() - int64(inputData.Timestamp))
 
 				// 记录输入延迟统计
@@ -285,10 +282,10 @@ func (s *LockStepServer) processFrame(room *Room) {
 					room.NetworkStats.IncrementInputLatencyStats(inputLatency)
 				}
 
-				// 根据玩家在线状态设置Flag字段（第0位：1表示在线，0表示不在线）
+				// 设置玩家在线状态标志
 				var flag uint32 = 0
 				if player.State.Online {
-					flag |= 1 // 设置第0位为1，表示玩家在线
+					flag |= 1 // 第0位表示在线状态
 				}
 
 				frame.DataCollection = append(frame.DataCollection, &RelayData{
@@ -300,54 +297,51 @@ func (s *LockStepServer) processFrame(room *Room) {
 				})
 				frame.ValidDataCount++
 			}
-			// 如果该玩家有输入，计数
-			if player.State.Online {
-				playersWithInput++
-			}
 			// 清理已处理的输入
 			delete(player.InputBuffer, frameID)
 		}
 		player.Mutex.RUnlock()
 	}
 
-	// 更新帧统计 - 只有当所有在线玩家都没有输入时才记录为丢帧
-	// 这样可以避免因为个别玩家AFK或网络问题导致的误报
-	if onlinePlayerCount > 0 && playersWithInput == 0 && room.FrameStats != nil {
-		room.FrameStats.mutex.Lock()
-		room.FrameStats.missedFrames++
-		room.FrameStats.mutex.Unlock()
+	return frame
+}
+
+// broadcastFrame 广播帧数据到房间内所有玩家
+func (s *LockStepServer) broadcastFrame(room *Room, frame *Frame) {
+	respData, err := proto.Marshal(frame)
+	if err != nil {
+		Log.Error("Room %s: Failed to marshal frame response: %v", room.ID, err)
+		return
 	}
 
-	// 存储帧数据
-	room.Frames[frameID] = frame
-	room.CurrentFrameID = frameID
-	if frameID > room.MaxFrameID {
-		room.MaxFrameID = frameID
+	msg := &LockStepMessage{
+		Type:    LockStepMessage_FRAME,
+		Payload: respData,
 	}
 
-	// 广播帧数据
-	if currentFrame, exists := room.Frames[frameID]; exists {
-		respData, err := proto.Marshal(currentFrame)
-		if err != nil {
-			s.logger.Printf("Room %s: Failed to marshal frame response: %v", room.ID, err)
-			return
-		}
+	s.broadcastToRoom(room, msg)
+}
 
-		msg := &LockStepMessage{
-			Type:    LockStepMessage_FRAME,
-			Payload: respData,
-		}
-
-		s.broadcastToRoom(room, msg)
-		// s.logger.Printf("Room %s: Broadcasted frame %d", room.ID, frameID)
+// updateFrameStats 更新帧统计信息
+func (s *LockStepServer) updateFrameStats(room *Room, frameStartTime time.Time, frameDuration time.Duration, isLateFrame, isEmpty bool) {
+	if room.FrameStats == nil {
+		return
 	}
+
+	// 更新帧统计
+	room.IncrementFrameStats(isLateFrame, isEmpty, frameDuration)
+
+	// 更新最后帧时间
+	room.FrameStats.mutex.Lock()
+	room.FrameStats.lastFrameTime = frameStartTime
+	room.FrameStats.mutex.Unlock()
 }
 
 // broadcastToRoom 向房间广播消息
 func (s *LockStepServer) broadcastToRoom(room *Room, msg *LockStepMessage) {
 	data, err := proto.Marshal(msg)
 	if err != nil {
-		s.logger.Printf("Failed to marshal message: %v", err)
+		Log.Error("Failed to marshal message: %v", err)
 		return
 	}
 
@@ -385,7 +379,7 @@ func (s *LockStepServer) broadcastPlayerState(room *Room, playerID PlayerID, sta
 
 	stateData, err := proto.Marshal(&playerStateMsg)
 	if err != nil {
-		s.logger.Printf("Failed to marshal player state message: %v", err)
+		Log.Error("Failed to marshal player state message: %v", err)
 		return
 	}
 
@@ -395,7 +389,7 @@ func (s *LockStepServer) broadcastPlayerState(room *Room, playerID PlayerID, sta
 	}
 
 	s.broadcastToRoom(room, msg)
-	s.logger.Printf("Room %s: Broadcasted player %d state change: %s", room.ID, playerID, reason)
+	Log.Info("Room %s: Broadcasted player %d state change: %s", room.ID, playerID, reason)
 }
 
 // broadcastRoomState 广播房间状态变更
@@ -406,11 +400,11 @@ func (s *LockStepServer) broadcastRoomState(room *Room, reason string) {
 		Reason: reason,
 	}
 
-	s.logger.Printf("BroadcastRoomState: %v\n", roomStateMsg.State)
+	Log.Debug("BroadcastRoomState: %v", roomStateMsg.State)
 
 	stateData, err := proto.Marshal(&roomStateMsg)
 	if err != nil {
-		s.logger.Printf("Failed to marshal room state message: %v", err)
+		Log.Error("Failed to marshal room state message: %v", err)
 		return
 	}
 
@@ -420,7 +414,7 @@ func (s *LockStepServer) broadcastRoomState(room *Room, reason string) {
 	}
 
 	s.broadcastToRoom(room, msg)
-	s.logger.Printf("Room %s: Broadcasted room state change: %s", room.ID, reason)
+	Log.Info("Room %s: Broadcasted room state change: %s", room.ID, reason)
 }
 
 // sendError 发送错误消息给指定连接
@@ -433,7 +427,7 @@ func (s *LockStepServer) sendError(room *Room, connectionID int, errorCode uint3
 
 	errorData, err := proto.Marshal(&errorMsg)
 	if err != nil {
-		s.logger.Printf("Failed to marshal error message: %v", err)
+		Log.Error("Failed to marshal error message: %v", err)
 		return
 	}
 
@@ -444,12 +438,12 @@ func (s *LockStepServer) sendError(room *Room, connectionID int, errorCode uint3
 
 	msgData, err := proto.Marshal(msg)
 	if err != nil {
-		s.logger.Printf("Failed to marshal lock step message: %v", err)
+		Log.Error("Failed to marshal lock step message: %v", err)
 		return
 	}
 
 	room.KcpServer.Send(connectionID, msgData, kcp2k.KcpReliable)
-	s.logger.Printf("Sent error %d to connection %d: %s", errorCode, connectionID, message)
+	Log.Error("Sent error %d to connection %d: %s", errorCode, connectionID, message)
 }
 
 // broadcastError 广播错误消息给房间内所有玩家
@@ -462,7 +456,7 @@ func (s *LockStepServer) broadcastError(room *Room, errorCode uint32, message st
 
 	errorData, err := proto.Marshal(&errorMsg)
 	if err != nil {
-		s.logger.Printf("Failed to marshal error message: %v", err)
+		Log.Error("Failed to marshal error message: %v", err)
 		return
 	}
 
@@ -472,12 +466,12 @@ func (s *LockStepServer) broadcastError(room *Room, errorCode uint32, message st
 	}
 
 	s.broadcastToRoom(room, msg)
-	s.logger.Printf("Room %s: Broadcasted error %d: %s", room.ID, errorCode, message)
+	Log.Error("Room %s: Broadcasted error %d: %s", room.ID, errorCode, message)
 }
 
 // KCP回调函数
 func (s *LockStepServer) onRoomConnected(room *Room, connectionID int) {
-	s.logger.Printf("Room %s: Connection %d established", room.ID, connectionID)
+	Log.Error("Room %s: Connection %d established", room.ID, connectionID)
 }
 
 func (s *LockStepServer) onRoomData(room *Room, connectionID int, data []byte, channel kcp2k.KcpChannel) {
@@ -490,14 +484,14 @@ func (s *LockStepServer) onRoomData(room *Room, connectionID int, data []byte, c
 	}
 
 	if len(data) == 0 {
-		s.logger.Printf("Room %s: Received empty message from connection %d, channel: %d", room.ID, connectionID, channel)
+		Log.Error("Room %s: Received empty message from connection %d, channel: %d", room.ID, connectionID, channel)
 		return
 	}
 
 	var msg LockStepMessage
 	err := proto.Unmarshal(data, &msg)
 	if err != nil {
-		s.logger.Printf("Room %s: Failed to unmarshal message from connection %d, channel: %d: %v", room.ID, connectionID, channel, err)
+		Log.Error("Room %s: Failed to unmarshal message from connection %d, channel: %d: %v", room.ID, connectionID, channel, err)
 		// 记录为丢包（解析失败）
 		if room.NetworkStats != nil {
 			room.NetworkStats.mutex.Lock()
@@ -535,7 +529,7 @@ func (s *LockStepServer) onRoomDisconnected(room *Room, connectionID int) {
 		disconnectedPlayer.State.Online = false
 		disconnectedPlayer.Mutex.Unlock()
 
-		s.logger.Printf("Room %s: Player %d disconnected", room.ID, disconnectedPlayer.ID)
+		Log.Error("Room %s: Player %d disconnected", room.ID, disconnectedPlayer.ID)
 
 		// 广播玩家离线状态给房间内的其他玩家
 		s.broadcastPlayerState(room, disconnectedPlayer.ID, disconnectedPlayer.State, "Player disconnected")
@@ -550,7 +544,7 @@ func (s *LockStepServer) onRoomError(room *Room, connectionID int, error kcp2k.E
 		room.NetworkStats.mutex.Unlock()
 	}
 
-	s.logger.Printf("Room %s: Connection %d error: %v - %s", room.ID, connectionID, error, reason)
+	Log.Error("Room %s: Connection %d error: %v - %s", room.ID, connectionID, error, reason)
 }
 
 // handleRoomMessage 处理房间消息
@@ -563,7 +557,7 @@ func (s *LockStepServer) handleRoomMessage(room *Room, connectionID int, msg *Lo
 	case LockStepMessage_FRAME_REQ:
 		s.handleFrameRequest(room, connectionID, msg.Payload)
 	default:
-		s.logger.Printf("Room %s: Unknown message type %d from connection %d", room.ID, msg.Type, connectionID)
+		Log.Error("Room %s: Unknown message type %d from connection %d", room.ID, msg.Type, connectionID)
 	}
 }
 
@@ -581,7 +575,7 @@ func (s *LockStepServer) handlePlayerInput(room *Room, connectionID int, payload
 	room.Mutex.RUnlock()
 
 	if player == nil {
-		s.logger.Printf("Room %s: Player not found for connection %d", room.ID, connectionID)
+		Log.Error("Room %s: Player not found for connection %d", room.ID, connectionID)
 		return
 	}
 
@@ -589,7 +583,7 @@ func (s *LockStepServer) handlePlayerInput(room *Room, connectionID int, payload
 	var input InputMessage
 	err := proto.Unmarshal(payload, &input)
 	if err != nil {
-		s.logger.Printf("Room %s: Failed to unmarshal player input: %v", room.ID, err)
+		Log.Error("Room %s: Failed to unmarshal player input: %v", room.ID, err)
 		return
 	}
 
@@ -602,11 +596,11 @@ func (s *LockStepServer) handleInput(room *Room, player *Player, frameID FrameID
 	player.Mutex.Lock()
 	// 检查是否已经有输入在这个帧中
 	if existingInputs, exists := player.InputBuffer[frameID]; exists {
-		// s.logger.Printf("Room %s: Player %d input seq %d APPENDING to existing %d inputs for frame %d",
+		// Log.Error("Room %s: Player %d input seq %d APPENDING to existing %d inputs for frame %d",
 		// 	room.ID, player.ID, input.SequenceId, len(existingInputs), frameID)
 		player.InputBuffer[frameID] = append(existingInputs, input)
 	} else {
-		// s.logger.Printf("Room %s: Player %d input seq %d assigned to frame %d", room.ID, player.ID, input.SequenceId, frameID)
+		// Log.Error("Room %s: Player %d input seq %d assigned to frame %d", room.ID, player.ID, input.SequenceId, frameID)
 		player.InputBuffer[frameID] = []*InputMessage{input}
 	}
 	player.Mutex.Unlock()
@@ -614,18 +608,43 @@ func (s *LockStepServer) handleInput(room *Room, player *Player, frameID FrameID
 
 // handleFrameRequest 处理补帧请求
 func (s *LockStepServer) handleFrameRequest(room *Room, connectionID int, payload []byte) {
-	var req FrameRequest
-	err := proto.Unmarshal(payload, &req)
+	// 解析帧请求
+	req, err := s.parseFrameRequest(payload)
 	if err != nil {
-		s.logger.Printf("Room %s: Failed to unmarshal frame request: %v", room.ID, err)
+		Log.Error("Room %s: Failed to unmarshal frame request: %v", room.ID, err)
 		return
 	}
 
+	// 收集请求的帧
+	frames, missingFrames := s.collectRequestedFrames(room, req)
+
+	// 记录缺失的帧
+	s.logMissingFrames(room, req, missingFrames)
+
+	// 记录帧请求信息
+	s.logFrameRequestInfo(room, req, len(frames))
+
+	// 发送补帧响应
+	s.sendFrameResponse(room, connectionID, frames)
+}
+
+// parseFrameRequest 解析帧请求
+func (s *LockStepServer) parseFrameRequest(payload []byte) (*FrameRequest, error) {
+	var req FrameRequest
+	if err := proto.Unmarshal(payload, &req); err != nil {
+		return nil, err
+	}
+	return &req, nil
+}
+
+// collectRequestedFrames 收集请求范围内的帧
+func (s *LockStepServer) collectRequestedFrames(room *Room, req *FrameRequest) ([]*Frame, []FrameID) {
 	room.Mutex.RLock()
+	defer room.Mutex.RUnlock()
+
 	frames := make([]*Frame, 0)
 	missingFrames := make([]FrameID, 0)
 
-	// 获取请求范围内的帧
 	startFrameID := FrameID(req.FrameId)
 	endFrameID := FrameID(req.FrameId + req.Count - 1)
 	for frameID := startFrameID; frameID <= endFrameID; frameID++ {
@@ -635,19 +654,30 @@ func (s *LockStepServer) handleFrameRequest(room *Room, connectionID int, payloa
 			missingFrames = append(missingFrames, frameID)
 		}
 	}
-	room.Mutex.RUnlock()
 
-	// 记录缺失的帧
+	return frames, missingFrames
+}
+
+// logMissingFrames 记录缺失的帧
+func (s *LockStepServer) logMissingFrames(room *Room, req *FrameRequest, missingFrames []FrameID) {
 	if len(missingFrames) > 0 {
-		s.logger.Printf("Room %s: Missing frames in request range %d-%d: %v (total missing: %d)",
+		startFrameID := FrameID(req.FrameId)
+		endFrameID := FrameID(req.FrameId + req.Count - 1)
+		Log.Error("Room %s: Missing frames in request range %d-%d: %v (total missing: %d)",
 			room.ID, startFrameID, endFrameID, missingFrames, len(missingFrames))
 	}
+}
 
-	// 记录帧请求信息
-	s.logger.Printf("Room %s: Sending frame response, requested range: %d-%d, found frames: %d",
-		room.ID, startFrameID, endFrameID, len(frames))
+// logFrameRequestInfo 记录帧请求信息
+func (s *LockStepServer) logFrameRequestInfo(room *Room, req *FrameRequest, foundFrames int) {
+	startFrameID := FrameID(req.FrameId)
+	endFrameID := FrameID(req.FrameId + req.Count - 1)
+	Log.Error("Room %s: Sending frame response, requested range: %d-%d, found frames: %d",
+		room.ID, startFrameID, endFrameID, foundFrames)
+}
 
-	// 发送补帧响应
+// sendFrameResponse 发送补帧响应
+func (s *LockStepServer) sendFrameResponse(room *Room, connectionID int, frames []*Frame) {
 	resp := FrameResponse{
 		Frames:  frames,
 		Success: true,
@@ -655,7 +685,7 @@ func (s *LockStepServer) handleFrameRequest(room *Room, connectionID int, payloa
 
 	respData, err := proto.Marshal(&resp)
 	if err != nil {
-		s.logger.Printf("Room %s: Failed to marshal frame response: %v", room.ID, err)
+		Log.Error("Room %s: Failed to marshal frame response: %v", room.ID, err)
 		return
 	}
 
@@ -666,7 +696,7 @@ func (s *LockStepServer) handleFrameRequest(room *Room, connectionID int, payloa
 
 	msgData, err := proto.Marshal(msg)
 	if err != nil {
-		s.logger.Printf("Room %s: Failed to marshal message: %v", room.ID, err)
+		Log.Error("Room %s: Failed to marshal message: %v", room.ID, err)
 		return
 	}
 
@@ -676,29 +706,47 @@ func (s *LockStepServer) handleFrameRequest(room *Room, connectionID int, payloa
 // handleJoinRoom 处理加入房间消息
 func (s *LockStepServer) handleJoinRoom(room *Room, connectionID int, payload []byte) {
 	// 解析JoinRoom消息
-	var joinMsg JoinRoomRequest
-
-	if err := proto.Unmarshal(payload, &joinMsg); err != nil {
-		s.logger.Printf("Room %s: Failed to parse join room message from connection %d: %v", room.ID, connectionID, err)
+	joinMsg, err := s.parseJoinRoomMessage(payload)
+	if err != nil {
+		Log.Error("Room %s: Failed to parse join room message from connection %d: %v", room.ID, connectionID, err)
 		s.sendError(room, connectionID, ErrorCodeInvalidMessage, "Invalid join room message", err.Error())
 		return
 	}
 
-	// 调用JoinRoom方法
+	// 尝试加入房间
 	if err := s.JoinRoom(RoomID(joinMsg.RoomId), PlayerID(joinMsg.PlayerId), connectionID); err != nil {
-		s.logger.Printf("Room %s: Failed to join room for player %d: %v", room.ID, joinMsg.PlayerId, err)
-		// 根据错误类型发送相应的错误码
-		if err.Error() == "room is full" || err.Error() == fmt.Sprintf("room %s is full", joinMsg.RoomId) {
-			s.sendError(room, connectionID, ErrorCodeRoomFull, "Room is full", "Cannot join room: maximum players reached")
-		} else if err.Error() == "player already in room" || err.Error() == fmt.Sprintf("player %d already in room %s", joinMsg.PlayerId, joinMsg.RoomId) {
-			s.sendError(room, connectionID, ErrorCodePlayerAlreadyInRoom, "Player already in room", "Player is already a member of this room")
-		} else {
-			s.sendError(room, connectionID, ErrorCodeUnknown, "Failed to join room", err.Error())
-		}
+		Log.Error("Room %s: Failed to join room for player %d: %v", room.ID, joinMsg.PlayerId, err)
+		s.handleJoinRoomError(room, connectionID, err, joinMsg)
 		return
 	}
 
-	// 发送成功响应 - 使用broadcastRoomState的相同格式
+	// 发送成功响应
+	s.sendJoinRoomSuccess(room, connectionID)
+}
+
+// parseJoinRoomMessage 解析加入房间消息
+func (s *LockStepServer) parseJoinRoomMessage(payload []byte) (*JoinRoomRequest, error) {
+	var joinMsg JoinRoomRequest
+	if err := proto.Unmarshal(payload, &joinMsg); err != nil {
+		return nil, err
+	}
+	return &joinMsg, nil
+}
+
+// handleJoinRoomError 处理加入房间错误
+func (s *LockStepServer) handleJoinRoomError(room *Room, connectionID int, err error, joinMsg *JoinRoomRequest) {
+	// 根据错误类型发送相应的错误码
+	if err.Error() == "room is full" || err.Error() == fmt.Sprintf("room %s is full", joinMsg.RoomId) {
+		s.sendError(room, connectionID, ErrorCodeRoomFull, "Room is full", "Cannot join room: maximum players reached")
+	} else if err.Error() == "player already in room" || err.Error() == fmt.Sprintf("player %d already in room %s", joinMsg.PlayerId, joinMsg.RoomId) {
+		s.sendError(room, connectionID, ErrorCodePlayerAlreadyInRoom, "Player already in room", "Player is already a member of this room")
+	} else {
+		s.sendError(room, connectionID, ErrorCodeUnknown, "Failed to join room", err.Error())
+	}
+}
+
+// sendJoinRoomSuccess 发送加入房间成功响应
+func (s *LockStepServer) sendJoinRoomSuccess(room *Room, connectionID int) {
 	room.Mutex.RLock()
 	roomStateMsg := RoomStateMessage{
 		RoomId: string(room.ID),
@@ -709,7 +757,7 @@ func (s *LockStepServer) handleJoinRoom(room *Room, connectionID int, payload []
 
 	stateData, err := proto.Marshal(&roomStateMsg)
 	if err != nil {
-		s.logger.Printf("Failed to marshal room state message: %v", err)
+		Log.Error("Failed to marshal room state message: %v", err)
 		return
 	}
 
@@ -721,31 +769,6 @@ func (s *LockStepServer) handleJoinRoom(room *Room, connectionID int, payload []
 	if data, err := proto.Marshal(responseMsg); err == nil {
 		room.KcpServer.Send(connectionID, data, kcp2k.KcpReliable)
 	}
-}
-
-// updateNetworkStats 更新网络统计信息
-func (s *LockStepServer) updateNetworkStats(room *Room, latency time.Duration) {
-	if room.NetworkStats == nil {
-		return
-	}
-
-	room.NetworkStats.mutex.Lock()
-	defer room.NetworkStats.mutex.Unlock()
-
-	// 更新延迟统计
-	room.NetworkStats.rttSum += latency
-	room.NetworkStats.rttCount++
-
-	// 更新最大和最小延迟
-	if latency > room.NetworkStats.maxRTT {
-		room.NetworkStats.maxRTT = latency
-	}
-	if latency < room.NetworkStats.minRTT {
-		room.NetworkStats.minRTT = latency
-	}
-
-	// 更新总包数
-	room.NetworkStats.totalPackets++
 }
 
 // GetRoomInfo 获取房间信息
@@ -764,171 +787,213 @@ func (s *LockStepServer) GetRoomMonitoringInfo(roomID RoomID) (map[string]interf
 }
 
 // GetServerStats 获取服务器统计信息（汇总所有房间）
+// aggregatedStats 聚合统计数据结构
+type aggregatedStats struct {
+	// 基础信息
+	totalRooms   int
+	totalPlayers int
+
+	// 帧统计
+	totalFrames  uint64
+	lateFrames   uint64
+	emptyFrames  uint64
+	frameTimeSum time.Duration
+
+	// 网络统计
+	totalPackets  uint64
+	lostPackets   uint64
+	bytesReceived uint64
+	bytesSent     uint64
+	rttSum        time.Duration
+	rttCount      int
+	maxRtt        time.Duration
+	minRtt        time.Duration
+
+	// 输入延迟统计
+	inputLatencySum   time.Duration
+	inputLatencyCount int
+	maxInputLatency   time.Duration
+	minInputLatency   time.Duration
+
+	// 抖动统计
+	jitterSum   time.Duration
+	jitterCount int
+	maxJitter   time.Duration
+	minJitter   time.Duration
+}
+
 func (s *LockStepServer) GetServerStats() map[string]interface{} {
 	s.mutex.RLock()
 	defer s.mutex.RUnlock()
 
 	allRooms := s.rooms.GetAllRooms()
-
-	// 汇总所有房间的帧统计信息
-	var totalFrames, missedFrames, lateFrames uint64
-	var frameTimeSum time.Duration
-	frameCount := 0
-
-	// 汇总所有房间的网络统计信息
-	var totalPackets, lostPackets, bytesReceived, bytesSent uint64
-	var rttSum time.Duration
-	var maxRtt, minRtt time.Duration
-	rttCount := 0
-	minRtt = time.Hour // 初始化为很大的值
-
-	// 汇总输入延迟统计信息
-	var inputLatencySum time.Duration
-	var maxInputLatency, minInputLatency time.Duration
-	inputLatencyCount := 0
-	minInputLatency = time.Hour // 初始化为很大的值
-
-	// 汇总Jitter统计信息
-	var jitterSum time.Duration
-	var maxJitter, minJitter time.Duration
-	jitterCount := 0
-	minJitter = time.Hour // 初始化为很大的值
-
-	// 计算总玩家数
-	totalPlayers := 0
-
-	for _, room := range allRooms {
-		totalPlayers += len(room.Players)
-
-		// 汇总帧统计
-		if room.FrameStats != nil {
-			frameStats := room.GetFrameStats()
-			totalFrames += frameStats.GetTotalFrames()
-			missedFrames += frameStats.GetMissedFrames()
-			lateFrames += frameStats.GetLateFrames()
-			frameTimeSum += frameStats.frameTimeSum
-			frameCount++
-		}
-
-		// 汇总网络统计
-		netStats := room.GetNetworkStats()
-		if netStats != nil {
-			totalPackets += netStats.GetTotalPackets()
-			lostPackets += netStats.GetLostPackets()
-			bytesReceived += netStats.GetBytesReceived()
-			bytesSent += netStats.GetBytesSent()
-
-			// 延迟统计
-			netStats.mutex.RLock()
-			rttSum += netStats.rttSum
-			rttCount += int(netStats.rttCount)
-			if netStats.maxRTT > maxRtt {
-				maxRtt = netStats.maxRTT
-			}
-			if netStats.minRTT < minRtt && netStats.minRTT > 0 {
-				minRtt = netStats.minRTT
-			}
-
-			// 输入延迟统计
-			inputLatencySum += netStats.inputLatencySum
-			inputLatencyCount += int(netStats.inputLatencyCount)
-			if netStats.maxInputLatency > maxInputLatency {
-				maxInputLatency = netStats.maxInputLatency
-			}
-			if netStats.minInputLatency < minInputLatency && netStats.minInputLatency > 0 {
-				minInputLatency = netStats.minInputLatency
-			}
-
-			// Jitter统计
-			jitterSum += netStats.jitterSum
-			jitterCount += int(netStats.jitterCount)
-			if netStats.maxJitter > maxJitter {
-				maxJitter = netStats.maxJitter
-			}
-			if netStats.minJitter < minJitter && netStats.minJitter > 0 {
-				minJitter = netStats.minJitter
-			}
-			netStats.mutex.RUnlock()
-		}
-	}
-
-	// 计算平均帧时间
-	avgFrameTime := float64(0)
-	if totalFrames > 0 {
-		avgFrameTime = float64(frameTimeSum.Nanoseconds()) / float64(totalFrames) / 1e6 // 转换为毫秒
-	}
-
-	// 计算平均延迟
-	avgRtt := float64(0)
-	if rttCount > 0 {
-		avgRtt = float64(rttSum.Nanoseconds()) / float64(rttCount) / 1e6 // 转换为毫秒
-	}
-
-	// 处理最小延迟
-	minRttMs := int64(0)
-	if minRtt != time.Hour && minRtt > 0 {
-		minRttMs = minRtt.Milliseconds()
-	}
-
-	// 计算平均输入延迟
-	avgInputLatency := float64(0)
-	if inputLatencyCount > 0 {
-		avgInputLatency = float64(inputLatencySum.Nanoseconds()) / float64(inputLatencyCount) / 1e6 // 转换为毫秒
-	}
-
-	// 处理最小输入延迟
-	minInputLatencyMs := int64(0)
-	if minInputLatency != time.Hour && minInputLatency > 0 {
-		minInputLatencyMs = minInputLatency.Milliseconds()
-	}
-
-	// 计算平均Jitter
-	avgJitter := float64(0)
-	if jitterCount > 0 {
-		avgJitter = float64(jitterSum.Nanoseconds()) / float64(jitterCount) / 1e6 // 转换为毫秒
-	}
-
-	// 处理最小Jitter
-	minJitterMs := int64(0)
-	if minJitter != time.Hour && minJitter > 0 {
-		minJitterMs = minJitter.Milliseconds()
-	}
-
-	// 计算运行时间
-	uptime := time.Since(s.startTime).Milliseconds()
+	stats := s.aggregateRoomStats(allRooms)
 
 	return map[string]interface{}{
-		"total_rooms":   len(allRooms),
-		"total_players": totalPlayers,
-		"running":       s.running,
-		"uptime":        uptime,
-		"frame_stats": map[string]interface{}{
-			"total_frames":   totalFrames,
-			"missed_frames":  missedFrames,
-			"late_frames":    lateFrames,
-			"avg_frame_time": avgFrameTime,
-		},
-		"network_stats": map[string]interface{}{
-			"total_packets":  totalPackets,
-			"lost_packets":   lostPackets,
-			"bytes_received": bytesReceived,
-			"bytes_sent":     bytesSent,
-			"avg_rtt":        avgRtt,
-			"max_rtt":        maxRtt.Milliseconds(),
-			"min_rtt":        minRttMs,
-		},
-		"input_latency_stats": map[string]interface{}{
-			"input_latency_count": inputLatencyCount,
-			"avg_input_latency":   avgInputLatency,
-			"max_input_latency":   maxInputLatency.Milliseconds(),
-			"min_input_latency":   minInputLatencyMs,
-		},
-		"jitter_stats": map[string]interface{}{
-			"jitter_count": jitterCount,
-			"avg_jitter":   avgJitter,
-			"max_jitter":   maxJitter.Milliseconds(),
-			"min_jitter":   minJitterMs,
-		},
+		"total_rooms":         stats.totalRooms,
+		"total_players":       stats.totalPlayers,
+		"running":             s.running,
+		"uptime":              time.Since(s.startTime).Milliseconds(),
+		"frame_stats":         s.buildFrameStats(stats),
+		"network_stats":       s.buildNetworkStats(stats),
+		"input_latency_stats": s.buildInputLatencyStats(stats),
+		"jitter_stats":        s.buildJitterStats(stats),
+	}
+}
+
+// aggregateRoomStats 聚合所有房间的统计数据
+func (s *LockStepServer) aggregateRoomStats(allRooms map[RoomID]*Room) *aggregatedStats {
+	stats := &aggregatedStats{
+		totalRooms:      len(allRooms),
+		minRtt:          time.Hour, // 初始化为很大的值
+		minInputLatency: time.Hour,
+		minJitter:       time.Hour,
+	}
+
+	for _, room := range allRooms {
+		stats.totalPlayers += len(room.Players)
+		s.aggregateFrameStats(room, stats)
+		s.aggregateNetworkStats(room, stats)
+	}
+
+	return stats
+}
+
+// aggregateFrameStats 聚合帧统计数据
+func (s *LockStepServer) aggregateFrameStats(room *Room, stats *aggregatedStats) {
+	if room.FrameStats == nil {
+		return
+	}
+
+	frameStats := room.GetFrameStats()
+	stats.totalFrames += frameStats.GetTotalFrames()
+	stats.lateFrames += frameStats.GetLateFrames()
+	stats.emptyFrames += frameStats.GetEmptyFrames()
+	stats.frameTimeSum += frameStats.GetFrameTimeSum()
+}
+
+// aggregateNetworkStats 聚合网络统计数据
+func (s *LockStepServer) aggregateNetworkStats(room *Room, stats *aggregatedStats) {
+	netStats := room.GetNetworkStats()
+	if netStats == nil {
+		return
+	}
+
+	// 基础网络统计
+	stats.totalPackets += netStats.GetTotalPackets()
+	stats.lostPackets += netStats.GetLostPackets()
+	stats.bytesReceived += netStats.GetBytesReceived()
+	stats.bytesSent += netStats.GetBytesSent()
+
+	netStats.mutex.RLock()
+	defer netStats.mutex.RUnlock()
+
+	// RTT统计
+	stats.rttSum += netStats.rttSum
+	stats.rttCount += int(netStats.rttCount)
+	if netStats.maxRTT > stats.maxRtt {
+		stats.maxRtt = netStats.maxRTT
+	}
+	if netStats.minRTT < stats.minRtt && netStats.minRTT > 0 {
+		stats.minRtt = netStats.minRTT
+	}
+
+	// 输入延迟统计
+	stats.inputLatencySum += netStats.inputLatencySum
+	stats.inputLatencyCount += int(netStats.inputLatencyCount)
+	if netStats.maxInputLatency > stats.maxInputLatency {
+		stats.maxInputLatency = netStats.maxInputLatency
+	}
+	if netStats.minInputLatency < stats.minInputLatency && netStats.minInputLatency > 0 {
+		stats.minInputLatency = netStats.minInputLatency
+	}
+
+	// 抖动统计
+	stats.jitterSum += netStats.jitterSum
+	stats.jitterCount += int(netStats.jitterCount)
+	if netStats.maxJitter > stats.maxJitter {
+		stats.maxJitter = netStats.maxJitter
+	}
+	if netStats.minJitter < stats.minJitter && netStats.minJitter > 0 {
+		stats.minJitter = netStats.minJitter
+	}
+}
+
+// buildFrameStats 构建帧统计信息
+func (s *LockStepServer) buildFrameStats(stats *aggregatedStats) map[string]interface{} {
+	avgFrameTime := float64(0)
+	if stats.totalFrames > 0 {
+		avgFrameTime = float64(stats.frameTimeSum.Nanoseconds()) / float64(stats.totalFrames) / 1e6
+	}
+
+	return map[string]interface{}{
+		"total_frames":   stats.totalFrames,
+		"late_frames":    stats.lateFrames,
+		"empty_frames":   stats.emptyFrames,
+		"avg_frame_time": avgFrameTime,
+	}
+}
+
+// buildNetworkStats 构建网络统计信息
+func (s *LockStepServer) buildNetworkStats(stats *aggregatedStats) map[string]interface{} {
+	avgRtt := float64(0)
+	if stats.rttCount > 0 {
+		avgRtt = float64(stats.rttSum.Nanoseconds()) / float64(stats.rttCount) / 1e6
+	}
+
+	minRttMs := int64(0)
+	if stats.minRtt != time.Hour && stats.minRtt > 0 {
+		minRttMs = stats.minRtt.Milliseconds()
+	}
+
+	return map[string]interface{}{
+		"total_packets":  stats.totalPackets,
+		"lost_packets":   stats.lostPackets,
+		"bytes_received": stats.bytesReceived,
+		"bytes_sent":     stats.bytesSent,
+		"avg_rtt":        avgRtt,
+		"max_rtt":        stats.maxRtt.Milliseconds(),
+		"min_rtt":        minRttMs,
+	}
+}
+
+// buildInputLatencyStats 构建输入延迟统计信息
+func (s *LockStepServer) buildInputLatencyStats(stats *aggregatedStats) map[string]interface{} {
+	avgInputLatency := float64(0)
+	if stats.inputLatencyCount > 0 {
+		avgInputLatency = float64(stats.inputLatencySum.Nanoseconds()) / float64(stats.inputLatencyCount) / 1e6
+	}
+
+	minInputLatencyMs := int64(0)
+	if stats.minInputLatency != time.Hour && stats.minInputLatency > 0 {
+		minInputLatencyMs = stats.minInputLatency.Milliseconds()
+	}
+
+	return map[string]interface{}{
+		"input_latency_count": stats.inputLatencyCount,
+		"avg_input_latency":   avgInputLatency,
+		"max_input_latency":   stats.maxInputLatency.Milliseconds(),
+		"min_input_latency":   minInputLatencyMs,
+	}
+}
+
+// buildJitterStats 构建抖动统计信息
+func (s *LockStepServer) buildJitterStats(stats *aggregatedStats) map[string]interface{} {
+	avgJitter := float64(0)
+	if stats.jitterCount > 0 {
+		avgJitter = float64(stats.jitterSum.Nanoseconds()) / float64(stats.jitterCount) / 1e6
+	}
+
+	minJitterMs := int64(0)
+	if stats.minJitter != time.Hour && stats.minJitter > 0 {
+		minJitterMs = stats.minJitter.Milliseconds()
+	}
+
+	return map[string]interface{}{
+		"jitter_count": stats.jitterCount,
+		"avg_jitter":   avgJitter,
+		"max_jitter":   stats.maxJitter.Milliseconds(),
+		"min_jitter":   minJitterMs,
 	}
 }
 

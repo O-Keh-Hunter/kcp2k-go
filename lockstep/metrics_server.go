@@ -35,9 +35,9 @@ func (s *LockStepServer) StartMetricsServer() {
 	// Start server in goroutine
 	server := s.metricsServer
 	go func() {
-		s.logger.Printf("Starting metrics server on port %d", s.config.MetricsPort)
+		Log.Info("Starting metrics server on port %d", s.config.MetricsPort)
 		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			s.logger.Printf("Metrics server error: %v", err)
+			Log.Error("Metrics server error: %v", err)
 		}
 	}()
 }
@@ -49,9 +49,9 @@ func (s *LockStepServer) StopMetricsServer() {
 		defer cancel()
 
 		if err := s.metricsServer.Shutdown(ctx); err != nil {
-			s.logger.Printf("Error stopping metrics server: %v", err)
+			Log.Error("Error stopping metrics server: %v", err)
 		} else {
-			s.logger.Printf("Metrics server stopped")
+			Log.Info("Metrics server stopped")
 		}
 		s.metricsServer = nil
 	}

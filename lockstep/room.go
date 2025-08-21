@@ -2,7 +2,6 @@ package lockstep
 
 import (
 	"fmt"
-	"log"
 	"sync"
 	"time"
 
@@ -15,17 +14,15 @@ type RoomManager struct {
 	rooms       map[RoomID]*Room
 	portManager *PortManager
 	mutex       sync.RWMutex
-	logger      *log.Logger
 	kcpConfig   *kcp2k.KcpConfig
 	stopChan    chan struct{}
 }
 
 // NewRoomManager 创建房间管理器
-func NewRoomManager(portManager *PortManager, logger *log.Logger, kcpConfig *kcp2k.KcpConfig) *RoomManager {
+func NewRoomManager(portManager *PortManager, kcpConfig *kcp2k.KcpConfig) *RoomManager {
 	return &RoomManager{
 		rooms:       make(map[RoomID]*Room),
 		portManager: portManager,
-		logger:      logger,
 		kcpConfig:   kcpConfig,
 		stopChan:    make(chan struct{}),
 	}
@@ -110,7 +107,7 @@ func (rm *RoomManager) CreateRoom(roomID RoomID, config *RoomConfig, server *Loc
 	}
 
 	rm.rooms[roomID] = room
-	rm.logger.Printf("Room %s created on port %d", roomID, port)
+	Log.Info("Room %s created on port %d", roomID, port)
 
 	// 启动房间逻辑
 	go rm.startRoom(room, server)
@@ -154,101 +151,110 @@ func (rm *RoomManager) JoinRoom(roomID RoomID, playerID PlayerID, connectionID i
 	room.Mutex.Lock()
 	defer room.Mutex.Unlock()
 
-	// 先检查玩家是否已在房间中，如果存在则更新连接信息（支持重连）
+	// 检查玩家是否已存在（重连情况）
 	if existingPlayer, exists := room.Players[playerID]; exists {
-		// 玩家重连，更新连接信息
-		// 使用锁确保状态更新的原子性
-		existingPlayer.Mutex.Lock()
-		existingPlayer.ConnectionID = connectionID
-		existingPlayer.State.Online = true
-		existingPlayer.Mutex.Unlock()
-
-		// 广播玩家重新上线状态
-		server.broadcastPlayerState(room, playerID, existingPlayer.State, "Player reconnected")
-
-		// 如果游戏已经在运行，发送游戏开始消息
-		if room.State.Status == uint32(RoomStatusRunning) {
-			gameStartMsg := GameStartMessage{
-				CurrentFrameId:     uint32(room.CurrentFrameID),
-				GameAlreadyRunning: true,
-			}
-			gameStartPayload, err := proto.Marshal(&gameStartMsg)
-			if err == nil {
-				startMsg := LockStepMessage{
-					Type:    LockStepMessage_START,
-					Payload: gameStartPayload,
-				}
-				msgData, err := proto.Marshal(&startMsg)
-				if err == nil {
-					room.KcpServer.Send(connectionID, msgData, kcp2k.KcpReliable)
-					rm.logger.Printf("Sent game start message to reconnected player %d in room %s (current frame: %d)", playerID, roomID, room.CurrentFrameID)
-				}
-			}
-		}
-
-		rm.logger.Printf("Player %d reconnected to room %s", playerID, roomID)
-		return nil
+		return rm.handlePlayerReconnection(room, playerID, connectionID, existingPlayer, server)
 	}
 
-	// 检查房间是否已满（仅对新玩家）
+	// 检查房间是否已满
 	if len(room.Players) >= int(room.Config.MaxPlayers) {
 		return fmt.Errorf("room %s is full", roomID)
 	}
 
-	// 创建玩家
+	// 创建新玩家并加入房间
+	return rm.addNewPlayerToRoom(room, playerID, connectionID, server)
+}
+
+// handlePlayerReconnection 处理玩家重连
+func (rm *RoomManager) handlePlayerReconnection(room *Room, playerID PlayerID, connectionID int, existingPlayer *Player, server *LockStepServer) error {
+	// 更新连接信息
+	existingPlayer.Mutex.Lock()
+	existingPlayer.ConnectionID = connectionID
+	existingPlayer.State.Online = true
+	existingPlayer.Mutex.Unlock()
+
+	// 广播玩家重新上线状态
+	server.broadcastPlayerState(room, playerID, existingPlayer.State, "Player reconnected")
+
+	// 如果游戏正在运行，发送游戏开始消息
+	if room.State.Status == uint32(RoomStatusRunning) {
+		rm.sendGameStartMessage(room, connectionID, "reconnected", playerID)
+	}
+
+	Log.Info("Player %d reconnected to room %s", playerID, room.ID)
+	return nil
+}
+
+// addNewPlayerToRoom 添加新玩家到房间
+func (rm *RoomManager) addNewPlayerToRoom(room *Room, playerID PlayerID, connectionID int, server *LockStepServer) error {
+	// 创建新玩家
+	player := rm.createNewPlayer(playerID, connectionID, room)
+
+	// 添加到房间
+	room.Players[playerID] = player
+
+	// 广播玩家状态
+	server.broadcastPlayerState(room, playerID, player.State, "Player joined room")
+
+	// 如果游戏正在运行，发送游戏开始消息
+	if room.State.Status == uint32(RoomStatusRunning) {
+		rm.sendGameStartMessage(room, connectionID, "new", playerID)
+	}
+
+	// 更新房间状态
+	rm.updateRoomStatusLocked(room, server)
+
+	Log.Info("Player %d joined room %s (players: %d/%d)", playerID, room.ID, len(room.Players), room.Config.MaxPlayers)
+	return nil
+}
+
+// createNewPlayer 创建新玩家
+func (rm *RoomManager) createNewPlayer(playerID PlayerID, connectionID int, room *Room) *Player {
 	player := &Player{
 		ID:           playerID,
 		ConnectionID: connectionID,
 		State: &PlayerState{
 			Online: true,
 		},
-		LastFrameID: 0, // 初始设置为0，后面会根据游戏状态调整
-		InputBuffer:  make(map[FrameID][]*InputMessage),
+		LastFrameID: 0,
+		InputBuffer: make(map[FrameID][]*InputMessage),
 		Mutex:       sync.RWMutex{},
 	}
 
 	// 设置新玩家的LastFrameID
-	// 如果游戏已经运行，设置为同步帧的起始帧ID-1，这样客户端可以从同步帧开始处理
 	if room.State.Status == uint32(RoomStatusRunning) && room.CurrentFrameID > 0 {
 		syncStartFrame := room.CurrentFrameID - 9
 		if syncStartFrame < 1 {
 			syncStartFrame = 1
 		}
 		player.LastFrameID = syncStartFrame - 1
-	} else {
-		player.LastFrameID = 0
 	}
 
-	// 添加到房间
-	room.Players[playerID] = player
+	return player
+}
 
-	// 广播玩家状态 - 确保向所有现有玩家通知新玩家加入
-	server.broadcastPlayerState(room, playerID, player.State, "Player joined room")
-
-	// 如果游戏已经在运行，发送游戏开始消息，包含当前帧ID信息
-	if room.State.Status == uint32(RoomStatusRunning) {
-		gameStartMsg := GameStartMessage{
-			CurrentFrameId:     uint32(room.CurrentFrameID),
-			GameAlreadyRunning: true,
-		}
-		gameStartPayload, err := proto.Marshal(&gameStartMsg)
-		if err == nil {
-			startMsg := LockStepMessage{
-				Type:    LockStepMessage_START,
-				Payload: gameStartPayload,
-			}
-			msgData, err := proto.Marshal(&startMsg)
-			if err == nil {
-				room.KcpServer.Send(connectionID, msgData, kcp2k.KcpReliable)
-				rm.logger.Printf("Sent game start message to new player %d in room %s (current frame: %d)", playerID, roomID, room.CurrentFrameID)
-			}
-		}
+// sendGameStartMessage 发送游戏开始消息
+func (rm *RoomManager) sendGameStartMessage(room *Room, connectionID int, playerType string, playerID PlayerID) {
+	gameStartMsg := GameStartMessage{
+		CurrentFrameId:     uint32(room.CurrentFrameID),
+		GameAlreadyRunning: true,
+	}
+	gameStartPayload, err := proto.Marshal(&gameStartMsg)
+	if err != nil {
+		return
 	}
 
-	// 根据玩家数量更新房间状态（注意：此时已经持有room.Mutex锁）
-	rm.updateRoomStatusLocked(room, server)
+	startMsg := LockStepMessage{
+		Type:    LockStepMessage_START,
+		Payload: gameStartPayload,
+	}
+	msgData, err := proto.Marshal(&startMsg)
+	if err != nil {
+		return
+	}
 
-	return nil
+	room.KcpServer.Send(connectionID, msgData, kcp2k.KcpReliable)
+	Log.Debug("Sent game start message to %s player %d in room %s (current frame: %d)", playerType, playerID, room.ID, room.CurrentFrameID)
 }
 
 // startRoom 启动房间
@@ -296,7 +302,7 @@ func (rm *RoomManager) stopRoom(room *Room) {
 	// 释放端口
 	rm.portManager.ReleasePort(room.Port)
 
-	rm.logger.Printf("Room %s stopped", room.ID)
+	Log.Info("Room %s stopped", room.ID)
 }
 
 // frameLoop 帧循环
@@ -360,7 +366,7 @@ func (rm *RoomManager) cleanupRooms() {
 		if room, exists := rm.rooms[roomID]; exists {
 			rm.stopRoom(room)
 			delete(rm.rooms, roomID)
-			rm.logger.Printf("Room %s cleaned up (empty for %v)", roomID, time.Since(room.CreatedAt))
+			Log.Info("Room %s cleaned up (empty for %v)", roomID, time.Since(room.CreatedAt))
 		}
 	}
 }
@@ -386,7 +392,7 @@ func (rm *RoomManager) updateRoomStatusLocked(room *Room, server *LockStepServer
 		if playerCount >= int(room.Config.MinPlayers) {
 			// 达到最小玩家数，转为准备状态
 			room.State.Status = uint32(RoomStatusReady)
-			rm.logger.Printf("Room %s: Status changed to READY (%d/%d players)", room.ID, playerCount, room.Config.MaxPlayers)
+			Log.Info("Room %s: Status changed to READY (%d/%d players)", room.ID, playerCount, room.Config.MaxPlayers)
 			server.broadcastRoomState(room, "Room ready to start")
 
 			// 自动开始游戏（可配置延迟）
@@ -399,7 +405,7 @@ func (rm *RoomManager) updateRoomStatusLocked(room *Room, server *LockStepServer
 		if playerCount < int(room.Config.MinPlayers) {
 			// 玩家数不足，回到等待状态
 			room.State.Status = uint32(RoomStatusWaiting)
-			rm.logger.Printf("Room %s: Status changed to WAITING (insufficient players: %d/%d)", room.ID, playerCount, room.Config.MinPlayers)
+			Log.Info("Room %s: Status changed to WAITING (insufficient players: %d/%d)", room.ID, playerCount, room.Config.MinPlayers)
 			server.broadcastRoomState(room, "Waiting for more players")
 		}
 
@@ -407,7 +413,7 @@ func (rm *RoomManager) updateRoomStatusLocked(room *Room, server *LockStepServer
 		if playerCount == 0 {
 			// 无玩家，结束游戏
 			room.State.Status = uint32(RoomStatusEnded)
-			rm.logger.Printf("Room %s: Game ENDED (no players)", room.ID)
+			Log.Info("Room %s: Game ENDED (no players)", room.ID)
 			server.broadcastRoomState(room, "Game ended - no players")
 		}
 	}
@@ -433,7 +439,7 @@ func (rm *RoomManager) startGame(room *Room, server *LockStepServer) {
 	// 开始游戏
 	room.State.Status = uint32(RoomStatusRunning)
 	room.State.StartTime = time.Now().Unix()
-	rm.logger.Printf("Room %s: Game STARTED with %d players", room.ID, len(room.Players))
+	Log.Info("Room %s: Game STARTED with %d players", room.ID, len(room.Players))
 
 	// 广播房间状态变更
 	server.broadcastRoomState(room, "Game started")
@@ -461,7 +467,7 @@ func (rm *RoomManager) RemoveRoom(roomID RoomID) {
 	if room, exists := rm.rooms[roomID]; exists {
 		rm.stopRoom(room)
 		delete(rm.rooms, roomID)
-		rm.logger.Printf("Room %s removed", roomID)
+		Log.Info("Room %s removed", roomID)
 	}
 }
 
@@ -499,20 +505,12 @@ func (r *Room) GetFrameStats() *FrameStats {
 	return r.FrameStats
 }
 
-// UpdateFrameStats 更新房间帧统计信息
-func (r *Room) UpdateFrameStats(totalFrames, missedFrames, lateFrames uint64, frameTimeSum time.Duration, lastFrameTime time.Time) {
-	if r.FrameStats == nil {
-		return
-	}
-	r.FrameStats.UpdateFrameStats(totalFrames, missedFrames, lateFrames, frameTimeSum, lastFrameTime)
-}
-
 // IncrementFrameStats 增量更新房间帧统计信息
-func (r *Room) IncrementFrameStats(missed, late bool, frameDuration time.Duration) {
+func (r *Room) IncrementFrameStats(late, empty bool, frameDuration time.Duration) {
 	if r.FrameStats == nil {
 		return
 	}
-	r.FrameStats.IncrementFrameStats(missed, late, frameDuration)
+	r.FrameStats.IncrementFrameStats(false, late, empty, frameDuration)
 }
 
 // GetRoomMonitoringInfo 获取单个房间的监控信息

@@ -10,6 +10,7 @@ type FrameStats struct {
 	totalFrames   uint64
 	missedFrames  uint64
 	lateFrames    uint64
+	emptyFrames   uint64 // 没有Input的帧数
 	frameTimeSum  time.Duration
 	lastFrameTime time.Time
 	mutex         sync.RWMutex
@@ -46,19 +47,22 @@ func (fs *FrameStats) GetAverageFrameTime() time.Duration {
 	return fs.frameTimeSum / time.Duration(fs.totalFrames)
 }
 
-// UpdateFrameStats 更新帧统计信息
-func (fs *FrameStats) UpdateFrameStats(totalFrames, missedFrames, lateFrames uint64, frameTimeSum time.Duration, lastFrameTime time.Time) {
-	fs.mutex.Lock()
-	defer fs.mutex.Unlock()
-	fs.totalFrames = totalFrames
-	fs.missedFrames = missedFrames
-	fs.lateFrames = lateFrames
-	fs.frameTimeSum = frameTimeSum
-	fs.lastFrameTime = lastFrameTime
+// GetFrameTimeSum 获取帧时间总和
+func (fs *FrameStats) GetFrameTimeSum() time.Duration {
+	fs.mutex.RLock()
+	defer fs.mutex.RUnlock()
+	return fs.frameTimeSum
+}
+
+// GetEmptyFrames 获取空帧数（没有Input的帧）
+func (fs *FrameStats) GetEmptyFrames() uint64 {
+	fs.mutex.RLock()
+	defer fs.mutex.RUnlock()
+	return fs.emptyFrames
 }
 
 // IncrementFrameStats 增量更新帧统计信息
-func (fs *FrameStats) IncrementFrameStats(missed, late bool, frameDuration time.Duration) {
+func (fs *FrameStats) IncrementFrameStats(missed, late, empty bool, frameDuration time.Duration) {
 	fs.mutex.Lock()
 	defer fs.mutex.Unlock()
 	fs.totalFrames++
@@ -67,6 +71,9 @@ func (fs *FrameStats) IncrementFrameStats(missed, late bool, frameDuration time.
 	}
 	if late {
 		fs.lateFrames++
+	}
+	if empty {
+		fs.emptyFrames++
 	}
 	fs.frameTimeSum += frameDuration
 	fs.lastFrameTime = time.Now()

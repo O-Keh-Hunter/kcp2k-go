@@ -2,7 +2,6 @@ package lockstep
 
 import (
 	"fmt"
-	"log"
 	"sync"
 	"time"
 
@@ -23,7 +22,6 @@ type LockStepClient struct {
 	connected      bool
 	running        bool
 	stopChan       chan struct{}
-	logger         *log.Logger
 
 	// 回调函数
 	onPlayerJoined func(playerID PlayerID)
@@ -60,21 +58,10 @@ type ClientCallbacks struct {
 	OnDisconnected func()
 
 	OnError func(error)
-
-	// Optional logger for the client
-	Logger *log.Logger
 }
 
 // NewLockStepClient 创建新的帧同步客户端
 func NewLockStepClient(config *LockStepConfig, playerID PlayerID, callbacks ClientCallbacks) *LockStepClient {
-	// Use provided logger or create default one
-	var logger *log.Logger
-	if callbacks.Logger != nil {
-		logger = callbacks.Logger
-	} else {
-		logger = log.New(log.Writer(), "[LockStepClient] ", log.LstdFlags)
-	}
-
 	client := &LockStepClient{
 		config:         *config,
 		playerID:       playerID,
@@ -82,7 +69,6 @@ func NewLockStepClient(config *LockStepConfig, playerID PlayerID, callbacks Clie
 		lastFrameID:    0,
 		frameBuffer:    make(map[FrameID]*Frame),
 		stopChan:       make(chan struct{}),
-		logger:         logger,
 		onPlayerJoined: callbacks.OnPlayerJoined,
 		onPlayerLeft:   callbacks.OnPlayerLeft,
 		onGameStarted:  callbacks.OnGameStarted,
@@ -152,7 +138,7 @@ func (c *LockStepClient) Connect(serverAddress string, port uint16) error {
 		}
 	}()
 
-	c.logger.Printf("Connecting to server %s:%d", serverAddress, port)
+	Log.Info("Connecting to server %s:%d", serverAddress, port)
 	return nil
 }
 
@@ -180,7 +166,7 @@ func (c *LockStepClient) Disconnect() {
 	if kcpClient != nil {
 		kcpClient.Disconnect()
 	}
-	c.logger.Println("Disconnected from server")
+	Log.Info("Disconnected from server")
 }
 
 // JoinRoom 加入房间
@@ -270,7 +256,7 @@ func (c *LockStepClient) RequestFrames(startFrameID, count uint32) error {
 func (c *LockStepClient) sendMessage(msg *LockStepMessage, channel kcp2k.KcpChannel) {
 	msgData, err := proto.Marshal(msg)
 	if err != nil {
-		c.logger.Printf("Failed to marshal message: %v", err)
+		Log.Error("Failed to marshal message: %v", err)
 		return
 	}
 
@@ -297,8 +283,8 @@ func (c *LockStepClient) onConnected() {
 	c.connected = true
 	c.mutex.Unlock()
 
-	c.logger.Println("[LockStepClient] Connected to server")
-	c.logger.Printf("[LockStepClient] Logger test - PlayerID: %d", c.playerID)
+	Log.Info("[LockStepClient] Connected to server")
+	Log.Debug("[LockStepClient] Logger test - PlayerID: %d", c.playerID)
 	if c.onConnectedCallback != nil {
 		c.onConnectedCallback()
 	}
@@ -306,14 +292,14 @@ func (c *LockStepClient) onConnected() {
 
 func (c *LockStepClient) onData(data []byte, channel kcp2k.KcpChannel) {
 	if len(data) == 0 {
-		c.logger.Printf("Received empty message, channel: %d", channel)
+		Log.Warning("Received empty message, channel: %d", channel)
 		return
 	}
 
 	var msg LockStepMessage
 	err := proto.Unmarshal(data, &msg)
 	if err != nil {
-		c.logger.Printf("Failed to unmarshal message, channel: %d, error: %v", channel, err)
+		Log.Error("Failed to unmarshal message, channel: %d, error: %v", channel, err)
 		return
 	}
 
@@ -326,7 +312,7 @@ func (c *LockStepClient) onDisconnected() {
 	if c.connected {
 		c.connected = false
 		c.running = false
-		c.logger.Println("Disconnected from server")
+		Log.Info("Disconnected from server")
 	}
 	c.mutex.Unlock()
 	if c.onDisconnectedCallback != nil {
@@ -335,7 +321,7 @@ func (c *LockStepClient) onDisconnected() {
 }
 
 func (c *LockStepClient) onError(error kcp2k.ErrorCode, reason string) {
-	c.logger.Printf("Client error: %s, reason: %s", error.String(), reason)
+	Log.Error("Client error: %s, reason: %s", error.String(), reason)
 
 	if c.onErrorCallback != nil {
 		c.onErrorCallback(fmt.Errorf("KCP error: %s, reason: %s", error.String(), reason))
@@ -358,7 +344,7 @@ func (c *LockStepClient) handleMessage(msg *LockStepMessage) {
 	case LockStepMessage_ERROR:
 		c.handleError(msg.Payload)
 	default:
-		c.logger.Printf("Unknown message type: %d", msg.Type)
+		Log.Warning("Unknown message type: %d", msg.Type)
 	}
 }
 
@@ -367,13 +353,24 @@ func (c *LockStepClient) handleFrame(payload []byte) {
 	var frame Frame
 	err := proto.Unmarshal(payload, &frame)
 	if err != nil {
-		c.logger.Printf("Failed to unmarshal frame: %v", err)
+		Log.Error("Failed to unmarshal frame: %v", err)
 		return
 	}
 
 	frameStartTime := time.Now()
 
-	// 基于RecvTickMS计算Jitter统计
+	// 更新Jitter统计
+	c.updateJitterStats(&frame)
+
+	// 存储帧数据并检测丢包
+	packetLossDetected := c.storeFrameAndDetectLoss(&frame)
+
+	// 更新统计信息
+	c.updateFrameAndNetworkStats(frameStartTime, len(payload), len(frame.DataCollection) == 0, packetLossDetected)
+}
+
+// updateJitterStats 更新Jitter统计
+func (c *LockStepClient) updateJitterStats(frame *Frame) {
 	if frame.RecvTickMs > 0 {
 		// 将RecvTickMS转换为时间
 		recvTime := time.Unix(0, int64(frame.RecvTickMs)*int64(time.Millisecond))
@@ -381,61 +378,81 @@ func (c *LockStepClient) handleFrame(payload []byte) {
 		expectedInterval := time.Duration(1000/c.config.RoomConfig.FrameRate) * time.Millisecond
 		c.NetworkStats.UpdateJitterStats(recvTime, expectedInterval)
 	}
+}
 
+// storeFrameAndDetectLoss 存储帧数据并检测丢包
+func (c *LockStepClient) storeFrameAndDetectLoss(frame *Frame) bool {
 	c.mutex.Lock()
-	c.frameBuffer[FrameID(frame.FrameId)] = &frame
+	defer c.mutex.Unlock()
+
+	// 存储帧数据
+	c.frameBuffer[FrameID(frame.FrameId)] = frame
 	if FrameID(frame.FrameId) > c.currentFrameID {
 		c.currentFrameID = FrameID(frame.FrameId)
 	}
 
-	// 检测丢包：遍历帧中的RelayData，检查SequenceId连续性
+	// 检测丢包
+	return c.detectPacketLoss(frame.DataCollection)
+}
+
+// detectPacketLoss 检测丢包
+func (c *LockStepClient) detectPacketLoss(dataCollection []*RelayData) bool {
 	packetLossDetected := false
-	for _, relayData := range frame.DataCollection {
+	for _, relayData := range dataCollection {
 		playerID := PlayerID(relayData.PlayerId)
 		sequenceID := relayData.SequenceId
 
-		// 如果 RelayData.PlayerId == Self.PlayerId 时，才有意义
-		// 表示用户自己的上行包，从调用 InputMessage 到 LockStep 客户端收到这个包的总延时，单位ms
-		// 方便游戏收集用户输入延时
+		// 只处理自己的数据包
 		if playerID == c.playerID {
 			// 记录输入延迟统计
 			inputLatency := time.Duration(relayData.DelayMs) * time.Millisecond
 			c.IncrementInputLatencyStats(inputLatency)
 
-			// 改进的丢包检测逻辑 - 只跟踪自己的序列号
-			if c.lastSeqID > 0 {
-				// 检查序列号跳跃（考虑可能的乱序）
-				if sequenceID > c.lastSeqID {
-					// 检查是否有序列号跳跃（丢包）
-					gap := sequenceID - c.lastSeqID
-					if gap > 1 {
-						// 检测到丢包，记录丢失的包数
-						packetLossDetected = true
-						c.logger.Printf("Packet loss detected: expected seq %d, got %d, gap: %d",
-							c.lastSeqID+1, sequenceID, gap-1)
-					}
-					// 更新最后接收序列号
-					c.lastSeqID = sequenceID
-				} else if sequenceID < c.lastSeqID {
-					// 收到乱序包，记录但不更新序列号
-					c.logger.Printf("Out-of-order packet received: seq %d, expected > %d",
-						sequenceID, c.lastSeqID)
-				} else {
-					// sequenceID == lastSeqID，重复包，忽略
-					c.logger.Printf("Duplicate packet received: seq %d", sequenceID)
-				}
-			} else {
-				// 第一次收到自己的包，直接记录
-				c.lastSeqID = sequenceID
+			// 检测丢包
+			if c.processSequenceID(sequenceID) {
+				packetLossDetected = true
 			}
 		}
 	}
+	return packetLossDetected
+}
 
-	c.mutex.Unlock()
+// processSequenceID 处理序列号并检测丢包
+func (c *LockStepClient) processSequenceID(sequenceID uint32) bool {
+	if c.lastSeqID == 0 {
+		// 第一次收到自己的包，直接记录
+		c.lastSeqID = sequenceID
+		return false
+	}
 
+	if sequenceID > c.lastSeqID {
+		// 检查是否有序列号跳跃（丢包）
+		gap := sequenceID - c.lastSeqID
+		if gap > 1 {
+			// 检测到丢包
+			Log.Warning("Packet loss detected: expected seq %d, got %d, gap: %d",
+				c.lastSeqID+1, sequenceID, gap-1)
+			c.lastSeqID = sequenceID
+			return true
+		}
+		// 更新最后接收序列号
+		c.lastSeqID = sequenceID
+	} else if sequenceID < c.lastSeqID {
+		// 收到乱序包
+		Log.Warning("Out-of-order packet received: seq %d, expected > %d",
+			sequenceID, c.lastSeqID)
+	} else {
+		// 重复包
+		Log.Warning("Duplicate packet received: seq %d", sequenceID)
+	}
+	return false
+}
+
+// updateFrameAndNetworkStats 更新帧和网络统计信息
+func (c *LockStepClient) updateFrameAndNetworkStats(frameStartTime time.Time, payloadSize int, isEmpty bool, packetLossDetected bool) {
 	// 更新帧统计信息
 	frameDuration := time.Since(frameStartTime)
-	c.IncrementFrameStats(false, false, frameDuration)
+	c.IncrementFrameStats(false, false, isEmpty, frameDuration)
 
 	// 更新网络统计信息
 	if packetLossDetected {
@@ -443,8 +460,8 @@ func (c *LockStepClient) handleFrame(payload []byte) {
 		rtt := c.GetRTT()
 		c.IncrementNetworkStats(0, 0, 0, 0, true, rtt)
 	}
-	// 更新网络统计信息（接收到帧数据），不重复记录RTT
-	c.IncrementNetworkStats(1, 0, uint64(len(payload)), 0, false, 0)
+	// 更新网络统计信息（接收到帧数据）
+	c.IncrementNetworkStats(1, 0, uint64(payloadSize), 0, false, 0)
 }
 
 // handleFrameResponse 处理补帧响应
@@ -452,17 +469,17 @@ func (c *LockStepClient) handleFrameResponse(payload []byte) {
 	var resp FrameResponse
 	err := proto.Unmarshal(payload, &resp)
 	if err != nil {
-		c.logger.Printf("Failed to unmarshal frame response: %v", err)
+		Log.Error("Failed to unmarshal frame response: %v", err)
 		return
 	}
 
 	if !resp.Success {
-		c.logger.Printf("Frame request failed: %s", resp.Error)
+		Log.Error("Frame request failed: %s", resp.Error)
 		return
 	}
 
 	if len(resp.Frames) == 0 {
-		c.logger.Printf("[LockStepClient] No frames in response")
+		Log.Warning("[LockStepClient] No frames in response")
 		return
 	}
 
@@ -487,7 +504,7 @@ func (c *LockStepClient) handleFrameResponse(payload []byte) {
 
 // handleGameStart 处理游戏开始
 func (c *LockStepClient) handleGameStart(payload []byte) {
-	c.logger.Println("Game started")
+	Log.Info("Game started")
 
 	// 设置running状态为true
 	if !c.running {
@@ -503,7 +520,7 @@ func (c *LockStepClient) handleGameStart(payload []byte) {
 	if len(payload) > 0 {
 		err := proto.Unmarshal(payload, &gameStartMsg)
 		if err != nil {
-			c.logger.Printf("Failed to unmarshal game start message: %v", err)
+			Log.Error("Failed to unmarshal game start message: %v", err)
 		} else {
 			// 如果游戏已经在运行，设置当前帧ID，补帧逻辑由PopFrame触发
 			if gameStartMsg.GameAlreadyRunning && gameStartMsg.CurrentFrameId > 0 {
@@ -526,16 +543,16 @@ func (c *LockStepClient) handlePlayerState(payload []byte) {
 	var playerStateMsg PlayerStateMessage
 	err := proto.Unmarshal(payload, &playerStateMsg)
 	if err != nil {
-		c.logger.Printf("Failed to unmarshal player state message: %v", err)
+		Log.Error("Failed to unmarshal player state message: %v", err)
 		return
 	}
 
-	// c.logger.Printf("Player %d state changed: online=%v, lastFrame=%d, ping=%dms, reason: %s",
+	// 注释掉的日志：Player %d state changed: online=%v, lastFrame=%d, ping=%dms, reason: %s
 	// 	playerStateMsg.PlayerId,
 	// 	playerStateMsg.State.Online,
 	// 	playerStateMsg.State.LastFrameId,
 	// 	playerStateMsg.State.Ping,
-	// 	playerStateMsg.Reason)
+	// 	playerStateMsg.Reason
 
 	// 如果是其他玩家的状态变更，触发相应的回调
 	if PlayerID(playerStateMsg.PlayerId) != c.playerID {
@@ -553,7 +570,7 @@ func (c *LockStepClient) handlePlayerState(payload []byte) {
 	}
 
 	// 打印玩家状态变更信息（取消注释以便调试）
-	c.logger.Printf("Player %d state changed: online=%v, reason: %s",
+	Log.Info("Player %d state changed: online=%v, reason: %s",
 		playerStateMsg.PlayerId,
 		playerStateMsg.State.Online,
 		playerStateMsg.Reason)
@@ -564,11 +581,11 @@ func (c *LockStepClient) handleRoomState(payload []byte) {
 	var roomStateMsg RoomStateMessage
 	err := proto.Unmarshal(payload, &roomStateMsg)
 	if err != nil {
-		c.logger.Printf("Failed to unmarshal room state message: %v", err)
+		Log.Error("Failed to unmarshal room state message: %v", err)
 		return
 	}
 
-	c.logger.Printf("Room %s state changed: status=%d, players=%d/%d, currentFrame=%d, reason: %s",
+	Log.Info("Room %s state changed: status=%d, players=%d/%d, currentFrame=%d, reason: %s",
 		roomStateMsg.RoomId,
 		roomStateMsg.State.Status,
 		roomStateMsg.State.CurrentPlayers,
@@ -597,7 +614,7 @@ func (c *LockStepClient) handleRoomState(payload []byte) {
 			c.mutex.Lock()
 			c.running = false
 			c.mutex.Unlock()
-			c.logger.Println("Game paused - waiting for more players")
+			Log.Info("Game paused - waiting for more players")
 		}
 	}
 }
@@ -607,11 +624,11 @@ func (c *LockStepClient) handleError(payload []byte) {
 	var errorMsg ErrorMessage
 	err := proto.Unmarshal(payload, &errorMsg)
 	if err != nil {
-		c.logger.Printf("Failed to unmarshal error message: %v", err)
+		Log.Error("Failed to unmarshal error message: %v", err)
 		return
 	}
 
-	c.logger.Printf("Received error %d: %s - %s", errorMsg.Code, errorMsg.Message, errorMsg.Details)
+	Log.Error("Received error %d: %s - %s", errorMsg.Code, errorMsg.Message, errorMsg.Details)
 
 	// 根据错误码执行相应的处理
 	switch errorMsg.Code {
@@ -633,7 +650,7 @@ func (c *LockStepClient) handleError(payload []byte) {
 		}
 	case ErrorCodeSyncFailed:
 		// 同步失败，可能需要重新请求帧数据
-		c.logger.Println("Sync failed, requesting frame data...")
+		Log.Warning("Sync failed, requesting frame data...")
 		if c.onErrorCallback != nil {
 			c.onErrorCallback(fmt.Errorf("synchronization failed: %s", errorMsg.Details))
 		}
@@ -758,8 +775,8 @@ func (c *LockStepClient) GetRTT() time.Duration {
 }
 
 // IncrementFrameStats 增量更新帧统计信息
-func (c *LockStepClient) IncrementFrameStats(missed, late bool, frameDuration time.Duration) {
-	c.FrameStats.IncrementFrameStats(missed, late, frameDuration)
+func (c *LockStepClient) IncrementFrameStats(missed, late, empty bool, frameDuration time.Duration) {
+	c.FrameStats.IncrementFrameStats(missed, late, empty, frameDuration)
 }
 
 // IncrementNetworkStats 增量更新网络统计信息
@@ -836,7 +853,7 @@ func (c *LockStepClient) PopFrame() *Frame {
 			// 触发补帧，每次最多补5帧
 			c.triggerFrameSync(nextFrameID)
 			// 更新帧统计信息（丢失帧）
-			c.IncrementFrameStats(true, false, 0)
+			c.IncrementFrameStats(true, false, false, 0)
 		}
 		return nil
 	}
@@ -849,7 +866,9 @@ func (c *LockStepClient) PopFrame() *Frame {
 	c.lastFrameID = nextFrameID
 
 	// 更新帧统计信息（成功处理的帧）
-	c.IncrementFrameStats(false, isLate, 0)
+	// 检查帧是否为空帧（没有输入数据）
+	isEmpty := len(frame.DataCollection) == 0
+	c.IncrementFrameStats(false, isLate, isEmpty, 0)
 
 	return frame
 }
@@ -882,7 +901,7 @@ func (c *LockStepClient) triggerFrameSync(startFrameID FrameID) {
 		go func() {
 			err := c.RequestFrames(startFrameID, endFrameID)
 			if err != nil {
-				c.logger.Printf("Failed to request frames %d-%d: %v", startFrameID, endFrameID, err)
+				Log.Error("Failed to request frames %d-%d: %v", startFrameID, endFrameID, err)
 			}
 		}()
 	}

@@ -171,7 +171,51 @@ func main() {
 			case <-ticker.C:
 				stats := server.GetServerStats()
 				logger.Println(strings.Repeat("=", 80))
-				logger.Printf("[SERVER-STATS] %+v", stats)
+				
+				// Server Status
+				logger.Printf("[STATUS] Running: %v | Uptime: %dms | Rooms: %v | Players: %v", 
+					stats["running"], stats["uptime"], stats["total_rooms"], stats["total_players"])
+				
+				// Frame Statistics
+				if frameStats, ok := stats["frame_stats"].(map[string]interface{}); ok {
+					logger.Printf("[FRAMES] Total: %v | AvgTime: %.2fms | Empty: %v | Late: %v",
+						frameStats["total_frames"], frameStats["avg_frame_time"], 
+						frameStats["empty_frames"], frameStats["late_frames"])
+				}
+				
+				// Network Statistics
+				if networkStats, ok := stats["network_stats"].(map[string]interface{}); ok {
+					bytesSent := networkStats["bytes_sent"]
+					bytesReceived := networkStats["bytes_received"]
+					totalPackets := networkStats["total_packets"]
+					lostPackets := networkStats["lost_packets"]
+					
+					// Calculate packet loss rate
+					lossRate := 0.0
+					if total, ok := totalPackets.(uint64); ok && total > 0 {
+						if lost, ok := lostPackets.(uint64); ok {
+							lossRate = float64(lost) / float64(total) * 100
+						}
+					}
+					
+					logger.Printf("[NETWORK] Sent: %.2fMB | Recv: %.2fMB | Packets: %v | Lost: %v (%.3f%%)",
+						float64(bytesSent.(uint64))/1024/1024, float64(bytesReceived.(uint64))/1024/1024,
+						totalPackets, lostPackets, lossRate)
+				}
+				
+				// Input Latency Statistics
+				if inputStats, ok := stats["input_latency_stats"].(map[string]interface{}); ok {
+					logger.Printf("[LATENCY] Avg: %.2fms | Range: %vms~%vms | Samples: %v",
+						inputStats["avg_input_latency"], inputStats["min_input_latency"], 
+						inputStats["max_input_latency"], inputStats["input_latency_count"])
+				}
+				
+				// Jitter Statistics
+				if jitterStats, ok := stats["jitter_stats"].(map[string]interface{}); ok {
+					logger.Printf("[JITTER] Avg: %.2fms | Range: %vms~%vms | Samples: %v",
+						jitterStats["avg_jitter"], jitterStats["min_jitter"], 
+						jitterStats["max_jitter"], jitterStats["jitter_count"])
+				}
 
 				// 显示房间状态统计
 				rooms := server.GetRooms()
@@ -185,7 +229,7 @@ func main() {
 					totalPlayers += len(room.Players)
 					room.Mutex.RUnlock()
 				}
-				logger.Printf("[ROOM-STATS] Total: %d, Active: %d, Players: %d", len(rooms), activeRooms, totalPlayers)
+				logger.Printf("[ROOMS] Total: %d | Active: %d | Players: %d", len(rooms), activeRooms, totalPlayers)
 			case <-sigChan:
 				return
 			}

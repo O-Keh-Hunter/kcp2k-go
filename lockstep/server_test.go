@@ -57,7 +57,7 @@ func TestGetServerStats_EmptyServer(t *testing.T) {
 		t.Errorf("Expected frame_stats to be map[string]interface{}, got %T", stats["frame_stats"])
 	}
 
-	expectedFrameFields := []string{"total_frames", "missed_frames", "late_frames", "avg_frame_time"}
+	expectedFrameFields := []string{"total_frames", "empty_frames", "late_frames", "avg_frame_time"}
 	for _, field := range expectedFrameFields {
 		if _, exists := frameStats[field]; !exists {
 			t.Errorf("Expected frame_stats to contain field %s", field)
@@ -170,9 +170,9 @@ func TestGetServerStats_WithFrameStats(t *testing.T) {
 	config := &LockStepConfig{
 		KcpConfig:   kcp2k.DefaultKcpConfig(),
 		RoomConfig:  DefaultRoomConfig(),
-		ServerPort:  8891,
+		ServerPort:  8896,
 		LogLevel:    "info",
-		MetricsPort: 9991,
+		MetricsPort: 9996,
 	}
 
 	// 创建服务器
@@ -196,7 +196,7 @@ func TestGetServerStats_WithFrameStats(t *testing.T) {
 	// 模拟帧统计数据
 	room.FrameStats.mutex.Lock()
 	room.FrameStats.totalFrames = 100
-	room.FrameStats.missedFrames = 5
+	room.FrameStats.emptyFrames = 5
 	room.FrameStats.lateFrames = 3
 	room.FrameStats.frameTimeSum = 100 * time.Millisecond
 	room.FrameStats.mutex.Unlock()
@@ -214,8 +214,8 @@ func TestGetServerStats_WithFrameStats(t *testing.T) {
 		t.Errorf("Expected total_frames to be 100, got %v", frameStats["total_frames"])
 	}
 
-	if frameStats["missed_frames"] != uint64(5) {
-		t.Errorf("Expected missed_frames to be 5, got %v", frameStats["missed_frames"])
+	if frameStats["empty_frames"] != uint64(5) {
+		t.Errorf("Expected empty_frames to be 5, got %v", frameStats["empty_frames"])
 	}
 
 	if frameStats["late_frames"] != uint64(3) {
@@ -356,7 +356,7 @@ func TestGetServerStats_MultipleRoomsAggregation(t *testing.T) {
 	// 为房间1设置统计数据
 	room1.FrameStats.mutex.Lock()
 	room1.FrameStats.totalFrames = 100
-	room1.FrameStats.missedFrames = 5
+	room1.FrameStats.emptyFrames = 5
 	room1.FrameStats.lateFrames = 2
 	room1.FrameStats.mutex.Unlock()
 
@@ -374,7 +374,7 @@ func TestGetServerStats_MultipleRoomsAggregation(t *testing.T) {
 	// 为房间2设置统计数据
 	room2.FrameStats.mutex.Lock()
 	room2.FrameStats.totalFrames = 200
-	room2.FrameStats.missedFrames = 10
+	room2.FrameStats.emptyFrames = 10
 	room2.FrameStats.lateFrames = 3
 	room2.FrameStats.mutex.Unlock()
 
@@ -402,8 +402,8 @@ func TestGetServerStats_MultipleRoomsAggregation(t *testing.T) {
 		t.Errorf("Expected total_frames to be 300, got %v", frameStats["total_frames"])
 	}
 
-	if frameStats["missed_frames"] != uint64(15) { // 5 + 10
-		t.Errorf("Expected missed_frames to be 15, got %v", frameStats["missed_frames"])
+	if frameStats["empty_frames"] != uint64(15) { // 5 + 10
+		t.Errorf("Expected empty_frames to be 15, got %v", frameStats["empty_frames"])
 	}
 
 	if frameStats["late_frames"] != uint64(5) { // 2 + 3
