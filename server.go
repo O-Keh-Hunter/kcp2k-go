@@ -1,7 +1,7 @@
 package kcp2k
 
 import (
-	"io"
+	"errors"
 	"net"
 	"sync"
 	"time"
@@ -131,13 +131,13 @@ func (s *KcpServer) rawReceiveFrom() ([]byte, *net.UDPAddr, bool) {
 	}
 	err := s.conn.SetReadDeadline(time.Now().Add(1 * time.Millisecond))
 	if err != nil {
-		Log.Error("[KCP] Server: setReadDeadline error: %v", err)
+		Log.Error("[KCP] Server: SetReadDeadline error: %v", err)
 		return nil, nil, false
 	}
 
 	n, addr, err := s.conn.ReadFromUDP(s.recvBuf)
 	if err != nil {
-		if err == io.EOF {
+		if errors.Is(err, net.ErrClosed) {
 			return nil, nil, false
 		}
 
@@ -248,8 +248,8 @@ func (s *KcpServer) processMessage(segment []byte, remote *net.UDPAddr) {
 		c.RawInput(segment)
 		return
 	}
-	// create a new connection but don't add yet. only if first message is handshake.
 
+	// create a new connection but don't add yet. only if first message is handshake.
 	conn := s.createConnection(id, remote)
 	conn.RawInput(segment)
 	conn.TickIncoming()

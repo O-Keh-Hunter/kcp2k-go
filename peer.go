@@ -155,18 +155,17 @@ func (p *KcpPeer) Reset(config KcpConfig) {
 	// 对应 C# 版的 kcp = new Kcp(0, RawSendReliable)
 	p.Kcp = kcp.NewKCP(0, func(buf []byte, size int) {
 		// 这是 KCP 的输出回调，用于发送可靠消息
+		// 使用独立缓冲区避免与不可靠发送共享缓冲导致数据竞争
+		out := make([]byte, size+5)
 		// 写入通道头部
-		p.rawSendBuffer[0] = byte(KcpReliable)
-
+		out[0] = byte(KcpReliable)
 		// 写入握手 cookie 以防止 UDP 欺骗
-		Encode32U(p.rawSendBuffer, 1, p.Cookie)
-
+		Encode32U(out, 1, p.Cookie)
 		// 写入数据
-		copy(p.rawSendBuffer[5:], buf[:size])
-
+		copy(out[5:], buf[:size])
 		// 通过 Handler 发送
 		if p.Handler != nil {
-			p.Handler.RawSend(p.rawSendBuffer[:size+5])
+			p.Handler.RawSend(out)
 		}
 	})
 
@@ -338,10 +337,54 @@ func (p *KcpPeer) OnRawInputReliable(message []byte) {
 		return
 	}
 
+	// Sanity: only feed valid KCP segments (cmd in 81..84 and length >= IKCP_OVERHEAD)
+	if len(message) < kcp.IKCP_OVERHEAD || !(message[4] >= 81 && message[4] <= 84) {
+		previewLen := len(message)
+		if previewLen > 24 {
+			previewLen = 24
+		}
+		Log.Debug("[KCP] Peer: drop non-KCP on reliable path len=%d first=% X", len(message), message[:previewLen])
+		return
+	}
+
 	// input into kcp, but skip channel byte
-	input := p.Kcp.Input(message, false, false)
+	input := p.Kcp.Input(message, true, false)
 	if input != 0 {
-		Log.Warning("[KCP] Peer: input failed with error=%d for buffer with length=%d", input, len(message))
+		if input == -2 || input == -1 {
+			// Diagnostic for non-KCP or malformed segment
+			previewLen := len(message)
+			if previewLen > 24 {
+				previewLen = 24
+			}
+			conv := uint32(0)
+			cmd := byte(0)
+			frg := byte(0)
+			wnd := uint16(0)
+			ts := uint32(0)
+			sn := uint32(0)
+			una := uint32(0)
+			if len(message) >= 24 {
+				if v, ok := Decode32U(message, 0); ok {
+					conv = v
+				}
+				cmd = message[4]
+				frg = message[5]
+				wnd = uint16(message[6]) | uint16(message[7])<<8
+				if v, ok := Decode32U(message, 8); ok {
+					ts = v
+				}
+				if v, ok := Decode32U(message, 12); ok {
+					sn = v
+				}
+				if v, ok := Decode32U(message, 16); ok {
+					una = v
+				}
+			}
+			Log.Debug("[KCP] Peer: input=%d len=%d state=%v conv=%d cmd=%d frg=%d wnd=%d ts=%d sn=%d una=%d first=% X",
+				input, len(message), p.State, conv, cmd, frg, wnd, ts, sn, una, message[:previewLen])
+		} else {
+			Log.Warning("[KCP] Peer: input failed with error=%d for buffer with length=%d", input, len(message))
+		}
 	}
 }
 
@@ -500,24 +543,25 @@ func (p *KcpPeer) SendUnreliable(header KcpHeaderUnreliable, content []byte) {
 
 	// 写入通道头部
 	// 从 0 开始，1 字节
-	p.rawSendBuffer[0] = byte(KcpUnreliable)
+	out := make([]byte, 6+len(content))
+	out[0] = byte(KcpUnreliable)
 
 	// 写入握手 cookie 以防止 UDP 欺骗
 	// 从 1 开始，4 字节
-	Encode32U(p.rawSendBuffer, 1, p.Cookie)
+	Encode32U(out, 1, p.Cookie)
 
 	// 写入 kcp 头部
-	p.rawSendBuffer[5] = byte(header)
+	out[5] = byte(header)
 
 	// 写入数据（如果有）
 	// 从 6 开始，N 字节
 	if len(content) > 0 {
-		copy(p.rawSendBuffer[6:], content)
+		copy(out[6:], content)
 	}
 
 	// IO 发送
 	if p.Handler != nil {
-		p.Handler.RawSend(p.rawSendBuffer[:len(content)+6])
+		p.Handler.RawSend(out)
 	}
 }
 

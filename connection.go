@@ -2,6 +2,8 @@ package kcp2k
 
 import (
 	"net"
+
+	kcp "github.com/xtaci/kcp-go/v5"
 )
 
 // KcpServerConnection mirrors C# KcpServerConnection.
@@ -118,6 +120,15 @@ func (c *KcpServerConnection) RawInput(segment []byte) {
 
 	switch KcpChannel(channel) {
 	case KcpReliable:
+		// sanity: reliable path must carry KCP segment
+		if len(message) < kcp.IKCP_OVERHEAD || !(message[4] >= 81 && message[4] <= 84) {
+			previewLen := len(message)
+			if previewLen > 24 {
+				previewLen = 24
+			}
+			Log.Debug("[KCP] ServerConnection: drop non-KCP on reliable path len=%d first=% X", len(message), message[:previewLen])
+			return
+		}
 		c.peer.OnRawInputReliable(message)
 	case KcpUnreliable:
 		c.peer.OnRawInputUnreliable(message)

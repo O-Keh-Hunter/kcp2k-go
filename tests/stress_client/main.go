@@ -40,8 +40,8 @@ type ClientStats struct {
 }
 
 type PendingPacket struct {
-	ID        int
-	SentTime  time.Time
+	ID       int
+	SentTime time.Time
 }
 
 func NewClient(id, serverID int) *Client {
@@ -114,10 +114,10 @@ func (c *Client) onConnected() {
 func (c *Client) onData(data []byte, channel kcp2k.KcpChannel) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	
+
 	c.Stats.PacketsReceived++
 	c.Stats.BytesReceived += int64(len(data))
-	
+
 	// 尝试解析响应数据包以计算延迟
 	dataStr := string(data)
 	if strings.HasPrefix(dataStr, "ECHO_") {
@@ -181,21 +181,31 @@ func (c *Client) SendPackets(fps int) {
 			currentPacketID := c.packetID
 			c.mu.Unlock()
 
-			// Create a test packet with timestamp and packet ID
-			packet := fmt.Sprintf("PACKET_%d_%d_%d_%s",
+			// Create a test packet with timestamp and packet ID (reliable)
+			relPacket := fmt.Sprintf("PACKET_%d_%d_%d_%s",
 				c.ID, c.ServerID, currentPacketID, time.Now().Format("15:04:05.000"))
 
 			sendTime := time.Now()
-			c.KcpClient.Send([]byte(packet), kcp2k.KcpReliable)
+			c.KcpClient.Send([]byte(relPacket), kcp2k.KcpReliable)
 
 			c.mu.Lock()
 			c.Stats.PacketsSent++
-			c.Stats.BytesSent += int64(len(packet))
+			c.Stats.BytesSent += int64(len(relPacket))
 			// 记录待响应的数据包用于延迟计算
 			c.pendingPackets[currentPacketID] = &PendingPacket{
 				ID:       currentPacketID,
 				SentTime: sendTime,
 			}
+			c.mu.Unlock()
+
+			// Also send an unreliable packet for stress testing (no latency tracking)
+			unrelPacket := fmt.Sprintf("UPACKET_%d_%d_%d_%s",
+				c.ID, c.ServerID, currentPacketID, time.Now().Format("15:04:05.000"))
+			c.KcpClient.Send([]byte(unrelPacket), kcp2k.KcpUnreliable)
+
+			c.mu.Lock()
+			c.Stats.PacketsSent++
+			c.Stats.BytesSent += int64(len(unrelPacket))
 			c.mu.Unlock()
 
 			// 清理超时的待响应数据包（超过5秒认为丢失）
@@ -207,7 +217,7 @@ func (c *Client) SendPackets(fps int) {
 func (c *Client) cleanupTimeoutPackets() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	
+
 	now := time.Now()
 	for id, pending := range c.pendingPackets {
 		if now.Sub(pending.SentTime) > 5*time.Second {

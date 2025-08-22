@@ -189,8 +189,8 @@ func (t *MultiClientServerTest) connectClientsBlocking(hostname string) {
 	}
 
 	// 连接客户端A和B
-	t.clientA.Connect(hostname, MultiClientTestPort)
-	t.clientB.Connect(hostname, MultiClientTestPort)
+	_ = t.clientA.Connect(hostname, MultiClientTestPort)
+	_ = t.clientB.Connect(hostname, MultiClientTestPort)
 
 	// 等待连接建立
 	for i := 0; i < 100 && (!t.clientA.Connected() || !t.clientB.Connected()); i++ {
@@ -205,8 +205,6 @@ func (t *MultiClientServerTest) disconnectClientsBlocking() {
 }
 
 // 阻塞式踢出客户端
-//
-//lint:ignore U1000 保留此方法以与 C# 版本测试保持一致
 func (t *MultiClientServerTest) kickClientBlocking(connectionId int) {
 	if conn, ok := t.server.connections[connectionId]; ok {
 		conn.Disconnect()
