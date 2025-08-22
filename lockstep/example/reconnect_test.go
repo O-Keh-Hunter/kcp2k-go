@@ -199,7 +199,7 @@ func (rt *ReconnectTest) createClients() error {
 // joinRoom 加入房间
 func (rt *ReconnectTest) joinRoom() error {
 	// 客户端1加入房间
-	if err := rt.client1.JoinRoom(string(rt.roomID)); err != nil {
+	if err := rt.client1.JoinRoom(string(rt.roomID), lockstep.PlayerID(1)); err != nil {
 		return fmt.Errorf("client1 join room failed: %v", err)
 	}
 
@@ -209,7 +209,7 @@ func (rt *ReconnectTest) joinRoom() error {
 	}
 
 	// 客户端2加入房间
-	if err := rt.client2.JoinRoom(string(rt.roomID)); err != nil {
+	if err := rt.client2.JoinRoom(string(rt.roomID), lockstep.PlayerID(2)); err != nil {
 		return fmt.Errorf("client2 join room failed: %v", err)
 	}
 
@@ -349,7 +349,7 @@ func (rt *ReconnectTest) simulateReconnect() error {
 	}
 
 	// 重新加入房间（这里会触发重连逻辑）
-	if err := client1.JoinRoom(string(rt.roomID)); err != nil {
+	if err := client1.JoinRoom(string(rt.roomID), lockstep.PlayerID(1)); err != nil {
 		return fmt.Errorf("client1 rejoin room failed: %v", err)
 	}
 

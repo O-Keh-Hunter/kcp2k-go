@@ -2,182 +2,199 @@ syntax = "proto3";
 
 package lockstep;
 
-option go_package = "github.com/O-Keh-Hunter/kcp2k-go/lockstep";
+option go_package = "./lockstep";
+option csharp_namespace = "LockStep.Protocol";
 
-// 基础类型定义
-message RelayData {
-    // 游戏每次调用 LockSteper::Input() 发包的时，会在数据里绑定一个单向增长的 id
-    // 当游戏发现 RelayData.SequenceId 不连续的时候，说明有丢包、或者乱序的情况发生
-    uint32 sequence_id = 1;
-    
-    // 在游戏过程中，LockStep Server分配给每个玩家的唯一标识，用于区分不同玩家的数据
-    // -1表示服务器插帧
-    uint32 player_id = 2;
-
-    // 如果 RelayData.PlayerId == Self.PlayerId 时，才有意义
-    // 表示用户自已的上行包，从调用 LockSteper::Input() 到 LockStep 客户端收到这个包的总延时，单位ms
-    // 方便游戏收集用户输入延时
-    uint32 delay_ms = 3;
-
-    // “位域”标志。第0位：标识玩家是否在线。
-    // 1：在线 0：不在线。
-    // GameClient可以直接通过调用 IsPlayerOnline 这个函数判断玩家是否在线。其他位保留。
-    uint32 flag = 4;
-
-    // 游戏自定义的数据，一般都是每个玩家，调用 Input 接口所对应的数据。
-    bytes data = 5;
+// 错误码定义
+enum ErrorCode {
+    ERROR_CODE_SUCC = 0;              // 成功
+    ERROR_CODE_UNKNOWN = 1;           // 未知错误
+    ERROR_CODE_INVALID_TOKEN = 2;     // token 无效或过期
+    ERROR_CODE_NOT_AUTHORIZED = 3;    // 无权限
+    ERROR_CODE_ROOM_NOT_FOUND = 4;    // 房间不存在
+    ERROR_CODE_ROOM_FULL = 5;         // 房间已满
+    ERROR_CODE_PLAYER_NOT_FOUND = 6;  // 玩家不存在
+    ERROR_CODE_ALREADY_IN_ROOM = 7;   // 玩家已在房间
+    ERROR_CODE_NOT_IN_ROOM = 8;       // 玩家不在房间
 }
 
-message Frame {
-    // 由LockStep Server生成的每一帧都有的唯一标识，从0开始递增。
-    uint32 frame_id = 1;
-
-    // 表示当前 Frame 的收包时刻，单位ms
-    // 方便游戏收集当前网络延时、抖动情况
-    uint32 recv_tick_ms = 2;
-
-    // 表示 FrameInfo.DataCollection 的可用长度，用于消除 GC
-    // 用法见ReadFrame接口说明
-    uint32 valid_data_count = 3;
-
-    // 上一帧到这一帧中间，服务器收集的用户输入，每一个RelayData表示一个用户发包
-    repeated RelayData DataCollection = 4;
+// 统一响应基类
+message BaseResponse {
+    ErrorCode error_code = 1;      // 错误码
+    string error_message = 2;      // 错误描述（可选，调试用）
 }
 
-message PlayerState {
-    uint32 id = 1;
-    bool online = 2;
-    int64 last_frame_id = 3;
+// ==================== 请求/响应消息 ====================
+
+message LoginRequest {
+    string token = 1;
+    int32 player_id = 2;
 }
 
-// 房间状态枚举
-enum RoomStatus {
-    ROOM_STATUS_IDLE = 0;    // 房间空闲
-    ROOM_STATUS_WAITING = 1; // 等待玩家
-    ROOM_STATUS_RUNNING = 2; // 游戏进行中
-    ROOM_STATUS_ENDED = 3;   // 游戏结束
+message LoginResponse {
+    BaseResponse base = 1;
+    int32 player_id = 2;
 }
 
-message RoomState {
-    RoomStatus status = 1;
-    uint32 current_players = 2;
-    uint32 max_players = 3;
-    int64 start_time = 4;
-    int64 end_time = 5;
-    uint32 current_frame_id = 6;
-}
-
-message FrameRequest {
-    uint32 frame_id = 1;
-    uint32 count = 2;
-}
-
-message FrameResponse {
-    repeated Frame frames = 1;
-    bool success = 2;
-    string error = 3;
+message LogoutRequest {}
+message LogoutResponse {
+    BaseResponse base = 1;
 }
 
 message JoinRoomRequest {
     string room_id = 1;
-    uint32 player_id = 2;
+    int32 player_id = 2;
+}
+message JoinRoomResponse {
+    BaseResponse base = 1;
+    string room_id = 2;
 }
 
-// 主要的网络消息
-message LockStepMessage {
-    enum MessageType {
-        UNKNOWN = 0;
-        FRAME = 1;
-        INPUT = 2;
-        JOIN_ROOM = 3;
-        LEAVE_ROOM = 4;
-        FRAME_REQ = 5;
-        FRAME_RESP = 6;
-        START = 7;
-        END = 8;
-        PLAYER_STATE = 9;
-        ROOM_STATE = 10;
-        ERROR = 11;
-        READY = 12;
-    }
-    
-    MessageType type = 1;
-    bytes payload = 2;
+message ReadyRequest {
+    bool ready = 1;
+}
+message ReadyResponse {
+    BaseResponse base = 1;
 }
 
-// 输入消息
+message BroadcastRequest {
+    bytes data = 1;
+}
+message BroadcastResponse {
+    BaseResponse base = 1;
+}
+
+message FrameRequest {
+    int32 frame_id = 1;
+    int32 count = 2;
+}
+message FrameResponse {
+    BaseResponse base = 1;
+    repeated FrameMessage frames = 2;
+}
+
+// ==================== 游戏内状态消息 ====================
+
+message GameStartMessage {
+    int32 current_frame_id = 1;
+    bool game_already_running = 2;
+    uint32 ready_players = 3;
+    uint32 min_players = 4;
+}
+
+enum PlayerStatus {
+    PLAYER_STATUS_ONLINE = 0;
+    PLAYER_STATUS_READY = 1;
+    PLAYER_STATUS_OFFLINE = 2;
+}
+
+message Player {
+    int32 player_id = 1;
+    PlayerStatus status = 2;
+}
+
+message PlayerStateMessage {
+    int32 player_id = 1;
+    PlayerStatus status = 2;
+    string reason = 3;
+}
+
+enum RoomStatus {
+    ROOM_STATUS_IDLE = 0;
+    ROOM_STATUS_WAITING = 1;
+    ROOM_STATUS_RUNNING = 2;
+    ROOM_STATUS_ENDED = 3;
+}
+
+message RoomStateMessage {
+    string room_id = 1;
+    RoomStatus status = 2;
+    int32 current_players = 3;
+    int32 max_players = 4;
+    int64 start_time = 5;
+    int64 end_time = 6;
+    int32 current_frame_id = 7;
+    string reason = 8;
+}
+
+message FrameMessage {
+    int32 frame_id = 1;
+    int32 recv_tick_ms = 2;
+    int32 valid_data_count = 3;
+    repeated RelayData data_collection = 4;
+}
+
+message RelayData {
+    int32 sequence_id = 1;
+    int32 player_id = 2;
+    int32 delay_ms = 3;
+    int32 flag = 4;
+    bytes data = 5;
+}
+
 message InputMessage {
-    // 缺省为None。当用户的Input数据需要转发给GameSvr（对应LockStep Server的WatchRoom功能），可以将该参数置为Subscribe
     enum InputFlag {
         None = 0;
-        Subscribe = 0x01; // 当用户的Input数据需要转发给GameSvr
-        DuplicateUpstream = 0x10; // 上行冗余，只有在rawUdp参数为true的时候才有效
+        Subscribe = 1;
+        DuplicateUpstream = 16;
     }
 
-    // 游戏每次调用 LockSteper::Input() 发包的时，会在数据里绑定一个单向增长的 id
-    // 当游戏发现 RelayData.SequenceId 不连续的时候，说明有丢包、或者乱序的情况发生
-    uint32 sequence_id = 1;
-
-    // 如果 RelayData.PlayerId == Self.PlayerId 时，才有意义
-    // 表示用户自已的上行包，从调用 LockSteper::Input() 到 LockStep 客户端收到这个包的总延时，单位ms
-    // 方便游戏收集用户输入延时
-    uint64 timestamp = 2;
-
-    // 游戏自定义数据
+    int32 sequence_id = 1;
+    int64 timestamp = 2;
     bytes data = 3;
-
-    // Input数据的控制标志，按bit位组合
     InputFlag flag = 4;
 }
 
-// Ready消息
-message ReadyMessage {
-    uint32 player_id = 1;
-    bool ready = 2; // true表示准备就绪，false表示取消准备
-    string room_id = 3;
+message BroadcastMessage {
+    int32 player_id = 1;
+    bytes data = 2;
 }
 
-// 游戏开始消息
-message GameStartMessage {
-    uint32 current_frame_id = 1;
-    bool game_already_running = 2;
-    uint32 ready_players = 3; // 已准备的玩家数量
-    uint32 min_players = 4; // 需要的最少玩家数量
-}
+// ==================== 顶层消息 ====================
 
-// 玩家状态消息
-message PlayerStateMessage {
-    uint32 player_id = 1;
-    PlayerState state = 2;
-    string reason = 3; // 状态变更原因
-}
+message LockStepMessage {
+    enum MessageType {
+        UNKNOWN = 0;
+        LOGIN_REQ = 1;
+        LOGIN_RESP = 2;
+        LOGOUT_REQ = 3;
+        LOGOUT_RESP = 4;
+        JOIN_ROOM_REQ = 5;
+        JOIN_ROOM_RESP = 6;
+        READY_REQ = 7;
+        READY_RESP = 8;
+        BROADCAST_REQ = 9;
+        BROADCAST_RESP = 10;
+        FRAME_REQ = 11;
+        FRAME_RESP = 12;
+        GAME_START = 13;
+        FRAME = 14;
+        INPUT = 15;
+        PLAYER_STATE = 16;
+        ROOM_STATE = 17;
+        BROADCAST = 18;
+    }
 
-// 房间状态消息
-message RoomStateMessage {
-    string room_id = 1;
-    RoomState state = 2;
-    string reason = 3; // 状态变更原因
-}
+    MessageType type = 1;
 
-// 错误消息
-message ErrorMessage {
-    uint32 code = 1;
-    string message = 2;
-    string details = 3;
-}
-
-// 房间配置（用于创建房间）
-message RoomConfig {
-    uint32 max_players = 1;
-    uint32 min_players = 2;
-    uint32 frame_rate = 3;
-    uint32 retry_window = 4;
-}
-
-// 服务器统计信息
-message ServerStats {
-    uint32 rooms = 1;
-    uint32 total_players = 2;
-    bool running = 3;
-    int64 uptime = 4;
+    oneof body {
+        LoginRequest login_req = 2;
+        LoginResponse login_resp = 3;
+        LogoutRequest logout_req = 4;
+        LogoutResponse logout_resp = 5;
+        JoinRoomRequest join_room_req = 6;
+        JoinRoomResponse join_room_resp = 7;
+        ReadyRequest ready_req = 8;
+        ReadyResponse ready_resp = 9;
+        BroadcastRequest broadcast_req = 10;
+        BroadcastResponse broadcast_resp = 11;
+        FrameRequest frame_req = 12;
+        FrameResponse frame_resp = 13;
+        GameStartMessage game_start = 14;
+        FrameMessage frame = 15;
+        InputMessage input = 16;
+        PlayerStateMessage player_state = 17;
+        RoomStateMessage room_state = 18;
+        BroadcastMessage broadcast = 19;
+    }
 }

@@ -57,7 +57,7 @@ func TestGetRoomMonitoringInfo_EmptyRoom(t *testing.T) {
 		t.Errorf("Expected player_count to be 0, got %v", monitoringInfo["player_count"])
 	}
 
-	if monitoringInfo["max_players"] != uint32(4) {
+	if monitoringInfo["max_players"].(int32) != 4 {
 		t.Errorf("Expected max_players to be 4, got %v", monitoringInfo["max_players"])
 	}
 
@@ -79,16 +79,16 @@ func TestGetRoomMonitoringInfo_EmptyRoom(t *testing.T) {
 	if !ok {
 		t.Errorf("Expected config to be map[string]interface{}, got %T", monitoringInfo["config"])
 	}
-	if config_info["max_players"] != uint32(4) {
+	if config_info["max_players"].(int32) != 4 {
 		t.Errorf("Expected config.max_players to be 4, got %v", config_info["max_players"])
 	}
-	if config_info["min_players"] != uint32(2) {
+	if config_info["min_players"].(int32) != 2 {
 		t.Errorf("Expected config.min_players to be 2, got %v", config_info["min_players"])
 	}
-	if config_info["frame_rate"] != uint32(15) {
+	if config_info["frame_rate"].(int32) != 15 {
 		t.Errorf("Expected config.frame_rate to be 15, got %v", config_info["frame_rate"])
 	}
-	if config_info["retry_window"] != uint32(50) {
+	if config_info["retry_window"].(int32) != 50 {
 		t.Errorf("Expected config.retry_window to be 50, got %v", config_info["retry_window"])
 	}
 
@@ -142,30 +142,28 @@ func TestGetRoomMonitoringInfo_WithPlayers(t *testing.T) {
 	defer server.rooms.RemoveRoom(roomID)
 
 	// 添加测试玩家
-	player1 := &Player{
-		ID:           PlayerID(101),
-		ConnectionID: 1001,
-		State: &PlayerState{
-			Online:      true,
-			LastFrameId: 5,
+	player1 := &LockStepPlayer{
+		Player: &Player{
+			PlayerId: PlayerID(101),
+			Status:   PlayerStatus_PLAYER_STATUS_ONLINE,
 		},
-		InputBuffer: make(map[FrameID][]*InputMessage),
+		ConnectionID: 1001,
+		InputBuffer:  make(map[FrameID][]*InputMessage),
 	}
 
-	player2 := &Player{
-		ID:           PlayerID(102),
-		ConnectionID: 1002,
-		State: &PlayerState{
-			Online:      false, // 离线玩家
-			LastFrameId: 3,
+	player2 := &LockStepPlayer{
+		Player: &Player{
+			PlayerId: PlayerID(102),
+			Status:   PlayerStatus_PLAYER_STATUS_OFFLINE,
 		},
-		InputBuffer: make(map[FrameID][]*InputMessage),
+		ConnectionID: 1002,
+		InputBuffer:  make(map[FrameID][]*InputMessage),
 	}
 
 	// 添加玩家到房间
 	room.Mutex.Lock()
-	room.Players[player1.ID] = player1
-	room.Players[player2.ID] = player2
+	room.Players[player1.PlayerId] = player1
+	room.Players[player2.PlayerId] = player2
 	room.CurrentFrameID = 10
 	room.MaxFrameID = 15
 	room.Mutex.Unlock()
@@ -207,8 +205,8 @@ func TestGetRoomMonitoringInfo_WithPlayers(t *testing.T) {
 		if p1["connection_id"] != 1001 {
 			t.Errorf("Expected player1 connection_id to be 1001, got %v", p1["connection_id"])
 		}
-		if p1["online"] != true {
-			t.Errorf("Expected player1 online to be true, got %v", p1["online"])
+		if p1["status"] != PlayerStatus_PLAYER_STATUS_ONLINE {
+			t.Errorf("Expected player1 online to be true, got %v", p1["status"])
 		}
 	} else {
 		t.Error("Player 101 not found in monitoring info")
@@ -219,8 +217,8 @@ func TestGetRoomMonitoringInfo_WithPlayers(t *testing.T) {
 		if p2["connection_id"] != 1002 {
 			t.Errorf("Expected player2 connection_id to be 1002, got %v", p2["connection_id"])
 		}
-		if p2["online"] != false {
-			t.Errorf("Expected player2 online to be false, got %v", p2["online"])
+		if p2["status"] != PlayerStatus_PLAYER_STATUS_OFFLINE {
+			t.Errorf("Expected player2 online to be PlayerStatus_PLAYER_STATUS_OFFLINE, got %v", p2["status"])
 		}
 	} else {
 		t.Error("Player 102 not found in monitoring info")

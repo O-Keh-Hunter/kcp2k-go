@@ -120,31 +120,31 @@ func TestGetServerStats_WithRooms(t *testing.T) {
 	}
 
 	// 模拟添加玩家到房间
-	room1.Players[1] = &Player{
-		ID:           1,
+	room1.Players[1] = &LockStepPlayer{
+		Player: &Player{
+			PlayerId: 1,
+			Status:   PlayerStatus_PLAYER_STATUS_ONLINE,
+		},
 		ConnectionID: 1,
-		State: &PlayerState{
-			Online: true,
-		},
-		InputBuffer: make(map[FrameID][]*InputMessage),
+		InputBuffer:  make(map[FrameID][]*InputMessage),
 	}
 
-	room1.Players[2] = &Player{
-		ID:           2,
+	room1.Players[2] = &LockStepPlayer{
+		Player: &Player{
+			PlayerId: 2,
+			Status:   PlayerStatus_PLAYER_STATUS_ONLINE,
+		},
 		ConnectionID: 2,
-		State: &PlayerState{
-			Online: true,
-		},
-		InputBuffer: make(map[FrameID][]*InputMessage),
+		InputBuffer:  make(map[FrameID][]*InputMessage),
 	}
 
-	room2.Players[3] = &Player{
-		ID:           3,
-		ConnectionID: 3,
-		State: &PlayerState{
-			Online: true,
+	room2.Players[3] = &LockStepPlayer{
+		Player: &Player{
+			PlayerId: 3,
+			Status:   PlayerStatus_PLAYER_STATUS_ONLINE,
 		},
-		InputBuffer: make(map[FrameID][]*InputMessage),
+		ConnectionID: 3,
+		InputBuffer:  make(map[FrameID][]*InputMessage),
 	}
 
 	// 获取统计信息

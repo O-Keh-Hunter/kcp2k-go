@@ -110,9 +110,9 @@ func main() {
 	lockstepConfig := lockstep.DefaultLockStepConfig()
 	lockstepConfig.ServerPort = config.ServerPort
 	lockstepConfig.MetricsPort = config.MetricsPort // 设置指标服务器端口
-	lockstepConfig.RoomConfig.MaxPlayers = uint32(config.PlayersPerRoom)
-	lockstepConfig.RoomConfig.MinPlayers = uint32(config.PlayersPerRoom) // 设置为满员才开始
-	lockstepConfig.RoomConfig.FrameRate = uint32(config.DownstreamRate)  // 服务端下行15帧/秒
+	lockstepConfig.RoomConfig.MaxPlayers = int32(config.PlayersPerRoom)
+	lockstepConfig.RoomConfig.MinPlayers = int32(config.PlayersPerRoom) // 设置为满员才开始
+	lockstepConfig.RoomConfig.FrameRate = int32(config.DownstreamRate)  // 服务端下行15帧/秒
 
 	// 如果有全局的 YAML 配置，应用 KCP 设置
 	if globalYamlConfig != nil {
@@ -139,9 +139,9 @@ func main() {
 
 	// 创建房间配置
 	roomConfig := lockstep.DefaultRoomConfig()
-	roomConfig.MaxPlayers = uint32(config.PlayersPerRoom)
-	roomConfig.MinPlayers = uint32(config.PlayersPerRoom)
-	roomConfig.FrameRate = uint32(config.DownstreamRate)
+	roomConfig.MaxPlayers = int32(config.PlayersPerRoom)
+	roomConfig.MinPlayers = int32(config.PlayersPerRoom)
+	roomConfig.FrameRate = int32(config.DownstreamRate)
 
 	// 批量创建房间
 	logger.Printf("Creating %d rooms...", config.RoomCount)
@@ -171,25 +171,25 @@ func main() {
 			case <-ticker.C:
 				stats := server.GetServerStats()
 				logger.Println(strings.Repeat("=", 80))
-				
+
 				// Server Status
-				logger.Printf("[STATUS] Running: %v | Uptime: %dms | Rooms: %v | Players: %v", 
+				logger.Printf("[STATUS] Running: %v | Uptime: %dms | Rooms: %v | Players: %v",
 					stats["running"], stats["uptime"], stats["total_rooms"], stats["total_players"])
-				
+
 				// Frame Statistics
 				if frameStats, ok := stats["frame_stats"].(map[string]interface{}); ok {
 					logger.Printf("[FRAMES] Total: %v | AvgTime: %.2fms | Empty: %v | Late: %v",
-						frameStats["total_frames"], frameStats["avg_frame_time"], 
+						frameStats["total_frames"], frameStats["avg_frame_time"],
 						frameStats["empty_frames"], frameStats["late_frames"])
 				}
-				
+
 				// Network Statistics
 				if networkStats, ok := stats["network_stats"].(map[string]interface{}); ok {
 					bytesSent := networkStats["bytes_sent"]
 					bytesReceived := networkStats["bytes_received"]
 					totalPackets := networkStats["total_packets"]
 					lostPackets := networkStats["lost_packets"]
-					
+
 					// Calculate packet loss rate
 					lossRate := 0.0
 					if total, ok := totalPackets.(uint64); ok && total > 0 {
@@ -197,23 +197,23 @@ func main() {
 							lossRate = float64(lost) / float64(total) * 100
 						}
 					}
-					
+
 					logger.Printf("[NETWORK] Sent: %.2fMB | Recv: %.2fMB | Packets: %v | Lost: %v (%.3f%%)",
 						float64(bytesSent.(uint64))/1024/1024, float64(bytesReceived.(uint64))/1024/1024,
 						totalPackets, lostPackets, lossRate)
 				}
-				
+
 				// Input Latency Statistics
 				if inputStats, ok := stats["input_latency_stats"].(map[string]interface{}); ok {
 					logger.Printf("[LATENCY] Avg: %.2fms | Range: %vms~%vms | Samples: %v",
-						inputStats["avg_input_latency"], inputStats["min_input_latency"], 
+						inputStats["avg_input_latency"], inputStats["min_input_latency"],
 						inputStats["max_input_latency"], inputStats["input_latency_count"])
 				}
-				
+
 				// Jitter Statistics
 				if jitterStats, ok := stats["jitter_stats"].(map[string]interface{}); ok {
 					logger.Printf("[JITTER] Avg: %.2fms | Range: %vms~%vms | Samples: %v",
-						jitterStats["avg_jitter"], jitterStats["min_jitter"], 
+						jitterStats["avg_jitter"], jitterStats["min_jitter"],
 						jitterStats["max_jitter"], jitterStats["jitter_count"])
 				}
 

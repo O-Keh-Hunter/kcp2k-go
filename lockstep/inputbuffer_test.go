@@ -6,8 +6,10 @@ import (
 
 func TestInputBufferMultipleInputs(t *testing.T) {
 	// 测试新的 InputBuffer 数据结构
-	player := &Player{
-		ID:          1,
+	player := &LockStepPlayer{
+		Player: &Player{
+			PlayerId: 1,
+		},
 		InputBuffer: make(map[FrameID][]*InputMessage),
 	}
 
@@ -26,7 +28,7 @@ func TestInputBufferMultipleInputs(t *testing.T) {
 
 	// 测试添加多个输入到同一帧
 	frameID := FrameID(10)
-	
+
 	// 添加第一个输入
 	if existingInputs, exists := player.InputBuffer[frameID]; exists {
 		player.InputBuffer[frameID] = append(existingInputs, input1)
@@ -46,19 +48,19 @@ func TestInputBufferMultipleInputs(t *testing.T) {
 		if len(inputList) != 2 {
 			t.Errorf("Expected 2 inputs, got %d", len(inputList))
 		}
-		
+
 		if inputList[0].SequenceId != 100 {
 			t.Errorf("Expected first input sequence ID 100, got %d", inputList[0].SequenceId)
 		}
-		
+
 		if inputList[1].SequenceId != 101 {
 			t.Errorf("Expected second input sequence ID 101, got %d", inputList[1].SequenceId)
 		}
-		
+
 		if string(inputList[0].Data) != "test input 1" {
 			t.Errorf("Expected first input data 'test input 1', got '%s'", string(inputList[0].Data))
 		}
-		
+
 		if string(inputList[1].Data) != "test input 2" {
 			t.Errorf("Expected second input data 'test input 2', got '%s'", string(inputList[1].Data))
 		}
@@ -71,13 +73,15 @@ func TestInputBufferMultipleInputs(t *testing.T) {
 
 func TestInputBufferEmptyFrame(t *testing.T) {
 	// 测试空帧的处理
-	player := &Player{
-		ID:          1,
+	player := &LockStepPlayer{
+		Player: &Player{
+			PlayerId: 1,
+		},
 		InputBuffer: make(map[FrameID][]*InputMessage),
 	}
 
 	frameID := FrameID(20)
-	
+
 	// 检查不存在的帧
 	if inputList, exists := player.InputBuffer[frameID]; exists {
 		if len(inputList) > 0 {

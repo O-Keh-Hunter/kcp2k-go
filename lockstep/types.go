@@ -6,93 +6,45 @@ import (
 	"time"
 
 	kcp2k "github.com/O-Keh-Hunter/kcp2k-go"
-	"google.golang.org/protobuf/proto"
 )
 
 // 类型别名，保持向后兼容
-type FrameID = uint32
-type PlayerID = uint32
+type FrameID = int32
+type PlayerID = int32
 type RoomID = string
 
-// 错误码定义
-const (
-	ErrorCodeUnknown             = 1000 // 未知错误
-	ErrorCodeInvalidMessage      = 1001 // 无效消息
-	ErrorCodeRoomNotFound        = 1002 // 房间不存在
-	ErrorCodeRoomFull            = 1003 // 房间已满
-	ErrorCodePlayerNotFound      = 1004 // 玩家不存在
-	ErrorCodePlayerAlreadyInRoom = 1005 // 玩家已在房间中
-	ErrorCodeGameNotRunning      = 1006 // 游戏未运行
-	ErrorCodeInvalidInput        = 1007 // 无效输入
-	ErrorCodeConnectionLost      = 1008 // 连接丢失
-	ErrorCodeTimeout             = 1009 // 超时
-	ErrorCodeServerOverload      = 1010 // 服务器过载
-	ErrorCodePermissionDenied    = 1011 // 权限不足
-	ErrorCodeInvalidFrame        = 1012 // 无效帧
-	ErrorCodeSyncFailed          = 1013 // 同步失败
-)
-
-// 序列化辅助函数
-func SerializeMessage(msg proto.Message) ([]byte, error) {
-	return proto.Marshal(msg)
+// RoomConfig 房间配置
+type RoomConfig struct {
+	MaxPlayers  int32 `json:"max_players"`  // 最大玩家数
+	MinPlayers  int32 `json:"min_players"`  // 最小玩家数
+	FrameRate   int32 `json:"frame_rate"`   // 帧率
+	RetryWindow int32 `json:"retry_window"` // 重试窗口
 }
 
-func DeserializeMessage(data []byte, msg proto.Message) error {
-	return proto.Unmarshal(data, msg)
-}
-
-// 将 protobuf PlayerState 转换为兼容格式
-func (ps *PlayerState) ToLegacyPlayerState() LegacyPlayerState {
-	return LegacyPlayerState{
-		Online:     ps.Online,
-		LastSeen:   time.Now(), // 使用当前时间，ping 信息由 kcp2k-go 基础库管理
-		Latency:    0,          // ping 延迟由 kcp2k-go 基础库管理
-		PacketLoss: 0.0,        // protobuf 版本暂不支持
-	}
-}
-
-// 兼容性结构体（用于需要 time.Time 的场景）
-type LegacyPlayerState struct {
-	Online     bool      `json:"online"`      // 是否在线
-	LastSeen   time.Time `json:"last_seen"`   // 最后活跃时间
-	Latency    int       `json:"latency"`     // 延迟（毫秒）
-	PacketLoss float32   `json:"packet_loss"` // 丢包率
-}
-
-type LegacyRoomState struct {
-	Status      RoomStatus `json:"status"`       // 房间状态
-	PlayerCount int        `json:"player_count"` // 玩家数量
-	MaxPlayers  int        `json:"max_players"`  // 最大玩家数
-	FrameRate   int        `json:"frame_rate"`   // 帧率
-	StartTime   time.Time  `json:"start_time"`   // 开始时间
-}
-
-// Player 玩家信息
-type Player struct {
-	ID           PlayerID                    `json:"id"`            // 玩家ID
+// LockStepPlayer 扩展的玩家信息（包含连接信息）
+type LockStepPlayer struct {
+	*Player                                  // 嵌入protobuf生成的Player
 	ConnectionID int                         `json:"connection_id"` // KCP连接ID
-	State        *PlayerState                `json:"state"`         // 玩家状态（使用 protobuf 结构体）
 	InputBuffer  map[FrameID][]*InputMessage `json:"-"`             // 输入缓冲区
-	Ready        bool                        `json:"ready"`         // 玩家是否准备就绪
 	Mutex        sync.RWMutex                `json:"-"`             // 读写锁
 }
 
 // Room 房间信息
 type Room struct {
-	ID             RoomID               `json:"id"`               // 房间ID
-	Port           uint16               `json:"port"`             // 房间专用端口
-	KcpServer      *kcp2k.KcpServer     `json:"-"`                // 房间专用KCP服务器
-	Players        map[PlayerID]*Player `json:"players"`          // 玩家列表
-	Frames         map[FrameID]*Frame   `json:"-"`                // 帧数据缓存
-	CurrentFrameID FrameID              `json:"current_frame_id"` // 当前帧ID
-	MaxFrameID     FrameID              `json:"max_frame_id"`     // 最大帧ID
-	State          *RoomState           `json:"state"`            // 房间状态（使用 protobuf 结构体）
-	Config         *RoomConfig          `json:"config"`           // 房间配置（使用 protobuf 结构体）
-	Mutex          sync.RWMutex         `json:"-"`                // 读写锁
-	Ticker         *time.Ticker         `json:"-"`                // 帧定时器
-	StopChan       chan struct{}        `json:"-"`                // 停止信号通道
-	CreatedAt      time.Time            `json:"created_at"`       // 创建时间
-	running        bool                 `json:"-"`                // 运行状态
+	ID             RoomID                       `json:"id"`                  // 房间ID
+	Port           uint16                       `json:"port"`                // 房间专用端口
+	KcpServer      *kcp2k.KcpServer             `json:"-"`                   // 房间专用KCP服务器
+	Players        map[PlayerID]*LockStepPlayer `json:"players"`             // 玩家列表
+	Frames         map[FrameID]*FrameMessage    `json:"-"`                   // 帧数据缓存
+	CurrentFrameID FrameID                      `json:"current_frame_id"`    // 当前帧ID
+	MaxFrameID     FrameID                      `json:"max_frame_id"`        // 最大帧ID
+	State          *RoomStateMessage            `json:"room_status_message"` // 房间状态（使用 protobuf 结构体）
+	Config         *RoomConfig                  `json:"config"`              // 房间配置
+	Mutex          sync.RWMutex                 `json:"-"`                   // 读写锁
+	Ticker         *time.Ticker                 `json:"-"`                   // 帧定时器
+	StopChan       chan struct{}                `json:"-"`                   // 停止信号通道
+	CreatedAt      time.Time                    `json:"created_at"`          // 创建时间
+	running        bool                         `json:"-"`                   // 运行状态
 
 	// 房间级别的统计信息
 	FrameStats   *FrameStats   `json:"-"` // 帧统计信息
@@ -115,9 +67,12 @@ func (r *Room) GetRoomStats() map[string]interface{} {
 
 	if r.State != nil {
 		stats["status"] = r.State.Status
-		stats["current_players"] = r.State.CurrentPlayers
-		stats["max_players"] = r.State.MaxPlayers
+		stats["current_players"] = len(r.Players)
 		stats["start_time"] = r.State.StartTime
+	}
+
+	if r.Config != nil {
+		stats["max_players"] = r.Config.MaxPlayers
 	}
 
 	if r.FrameStats != nil {

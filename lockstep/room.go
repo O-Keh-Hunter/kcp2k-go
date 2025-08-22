@@ -62,11 +62,11 @@ func (rm *RoomManager) CreateRoom(roomID RoomID, config *RoomConfig, server *Loc
 	room := &Room{
 		ID:             roomID,
 		Port:           port,
-		Players:        make(map[PlayerID]*Player),
-		Frames:         make(map[FrameID]*Frame),
+		Players:        make(map[PlayerID]*LockStepPlayer),
+		Frames:         make(map[FrameID]*FrameMessage),
 		CurrentFrameID: 0,
 		MaxFrameID:     0,
-		State: &RoomState{
+		State: &RoomStateMessage{
 			Status:         RoomStatus_ROOM_STATUS_IDLE,
 			CurrentPlayers: 0,
 			MaxPlayers:     config.MaxPlayers,
@@ -142,10 +142,10 @@ func (rm *RoomManager) GetAllRooms() map[RoomID]*Room {
 }
 
 // JoinRoom 玩家加入房间
-func (rm *RoomManager) JoinRoom(roomID RoomID, playerID PlayerID, connectionID int, server *LockStepServer) error {
+func (rm *RoomManager) JoinRoom(roomID RoomID, playerID PlayerID, connectionID int, server *LockStepServer) ErrorCode {
 	room, exists := rm.GetRoom(roomID)
 	if !exists {
-		return fmt.Errorf("room %s not found", roomID)
+		return ErrorCode_ERROR_CODE_ROOM_NOT_FOUND
 	}
 
 	room.Mutex.Lock()
@@ -158,7 +158,8 @@ func (rm *RoomManager) JoinRoom(roomID RoomID, playerID PlayerID, connectionID i
 
 	// 检查房间是否已满
 	if len(room.Players) >= int(room.Config.MaxPlayers) {
-		return fmt.Errorf("room %s is full", roomID)
+		Log.Error("")
+		return ErrorCode_ERROR_CODE_ROOM_FULL
 	}
 
 	// 创建新玩家并加入房间
@@ -166,15 +167,15 @@ func (rm *RoomManager) JoinRoom(roomID RoomID, playerID PlayerID, connectionID i
 }
 
 // handlePlayerReconnection 处理玩家重连
-func (rm *RoomManager) handlePlayerReconnection(room *Room, playerID PlayerID, connectionID int, existingPlayer *Player, server *LockStepServer) error {
+func (rm *RoomManager) handlePlayerReconnection(room *Room, playerID PlayerID, connectionID int, existingPlayer *LockStepPlayer, server *LockStepServer) ErrorCode {
 	// 更新连接信息
 	existingPlayer.Mutex.Lock()
 	existingPlayer.ConnectionID = connectionID
-	existingPlayer.State.Online = true
+	existingPlayer.Status = PlayerStatus_PLAYER_STATUS_ONLINE
 	existingPlayer.Mutex.Unlock()
 
 	// 广播玩家重新上线状态
-	server.broadcastPlayerState(room, playerID, existingPlayer.State, "Player reconnected")
+	server.broadcastPlayerState(room, playerID, existingPlayer.Status, "Player reconnected")
 
 	// 如果游戏正在运行，发送游戏开始消息
 	if room.State.Status == RoomStatus_ROOM_STATUS_RUNNING {
@@ -182,11 +183,11 @@ func (rm *RoomManager) handlePlayerReconnection(room *Room, playerID PlayerID, c
 	}
 
 	Log.Debug("Player %d reconnected to room %s", playerID, room.ID)
-	return nil
+	return ErrorCode_ERROR_CODE_SUCC
 }
 
 // addNewPlayerToRoom 添加新玩家到房间
-func (rm *RoomManager) addNewPlayerToRoom(room *Room, playerID PlayerID, connectionID int, server *LockStepServer) error {
+func (rm *RoomManager) addNewPlayerToRoom(room *Room, playerID PlayerID, connectionID int, server *LockStepServer) ErrorCode {
 	// 创建新玩家
 	player := rm.createNewPlayer(playerID, connectionID, room)
 
@@ -194,7 +195,7 @@ func (rm *RoomManager) addNewPlayerToRoom(room *Room, playerID PlayerID, connect
 	room.Players[playerID] = player
 
 	// 广播玩家状态
-	server.broadcastPlayerState(room, playerID, player.State, "Player joined room")
+	server.broadcastPlayerState(room, playerID, player.Status, "Player joined room")
 
 	// 如果游戏正在运行，发送游戏开始消息
 	if room.State.Status == RoomStatus_ROOM_STATUS_RUNNING {
@@ -205,19 +206,19 @@ func (rm *RoomManager) addNewPlayerToRoom(room *Room, playerID PlayerID, connect
 	rm.updateRoomStatusLocked(room, server)
 
 	Log.Debug("Player %d joined room %s (players: %d/%d)", playerID, room.ID, len(room.Players), room.Config.MaxPlayers)
-	return nil
+	return ErrorCode_ERROR_CODE_SUCC
 }
 
 // createNewPlayer 创建新玩家
-func (rm *RoomManager) createNewPlayer(playerID PlayerID, connectionID int, room *Room) *Player {
-	player := &Player{
-		ID:           playerID,
-		ConnectionID: connectionID,
-		State: &PlayerState{
-			Online: true,
+func (rm *RoomManager) createNewPlayer(playerID PlayerID, connectionID int, room *Room) *LockStepPlayer {
+	player := &LockStepPlayer{
+		Player: &Player{
+			PlayerId: playerID,
+			Status:   PlayerStatus_PLAYER_STATUS_ONLINE,
 		},
-		InputBuffer: make(map[FrameID][]*InputMessage),
-		Mutex:       sync.RWMutex{},
+		ConnectionID: connectionID,
+		InputBuffer:  make(map[FrameID][]*InputMessage),
+		Mutex:        sync.RWMutex{},
 	}
 
 	return player
@@ -225,20 +226,18 @@ func (rm *RoomManager) createNewPlayer(playerID PlayerID, connectionID int, room
 
 // sendGameStartMessage 发送游戏开始消息
 func (rm *RoomManager) sendGameStartMessage(room *Room, connectionID int, playerType string, playerID PlayerID) {
-	gameStartMsg := GameStartMessage{
-		CurrentFrameId:     uint32(room.CurrentFrameID),
+	gameStartMsg := &GameStartMessage{
+		CurrentFrameId:     int32(room.CurrentFrameID),
 		GameAlreadyRunning: true,
 	}
-	gameStartPayload, err := proto.Marshal(&gameStartMsg)
-	if err != nil {
-		return
-	}
 
-	startMsg := LockStepMessage{
-		Type:    LockStepMessage_START,
-		Payload: gameStartPayload,
+	startMsg := &LockStepMessage{
+		Type: LockStepMessage_GAME_START,
+		Body: &LockStepMessage_GameStart{
+			GameStart: gameStartMsg,
+		},
 	}
-	msgData, err := proto.Marshal(&startMsg)
+	msgData, err := proto.Marshal(startMsg)
 	if err != nil {
 		return
 	}
@@ -338,7 +337,7 @@ func (rm *RoomManager) cleanupRooms() {
 		room.Mutex.RLock()
 		onlineCount := 0
 		for _, player := range room.Players {
-			if player.State.Online {
+			if player.Status == PlayerStatus_PLAYER_STATUS_ONLINE || player.Status == PlayerStatus_PLAYER_STATUS_READY {
 				onlineCount++
 			}
 		}
@@ -374,7 +373,7 @@ func (rm *RoomManager) updateRoomStatusLocked(room *Room, server *LockStepServer
 	currentStatus := room.State.Status
 
 	// 更新当前玩家数量
-	room.State.CurrentPlayers = uint32(playerCount)
+	room.State.CurrentPlayers = int32(playerCount)
 
 	// 单向状态转换逻辑: idle -> waiting -> running -> ended
 	switch currentStatus {
@@ -390,7 +389,7 @@ func (rm *RoomManager) updateRoomStatusLocked(room *Room, server *LockStepServer
 		// 检查是否满足游戏开始条件
 		readyCount := 0
 		for _, player := range room.Players {
-			if player.Ready {
+			if player.Player.Status == PlayerStatus_PLAYER_STATUS_READY {
 				readyCount++
 			}
 		}
@@ -404,7 +403,7 @@ func (rm *RoomManager) updateRoomStatusLocked(room *Room, server *LockStepServer
 		// 检查是否所有玩家都离线一段时间
 		onlineCount := 0
 		for _, player := range room.Players {
-			if player.State.Online {
+			if player.Status == PlayerStatus_PLAYER_STATUS_ONLINE || player.Status == PlayerStatus_PLAYER_STATUS_READY {
 				onlineCount++
 			}
 		}
@@ -444,14 +443,14 @@ func (rm *RoomManager) startGame(room *Room, server *LockStepServer, readyPlayer
 		ReadyPlayers:       readyPlayers,
 		MinPlayers:         minPlayers,
 	}
-	gameStartPayload, err := proto.Marshal(&gameStartMsg)
-	if err == nil {
-		startMsg := &LockStepMessage{
-			Type:    LockStepMessage_START,
-			Payload: gameStartPayload,
-		}
-		server.broadcastToRoom(room, startMsg)
+
+	startMsg := &LockStepMessage{
+		Type: LockStepMessage_GAME_START,
+		Body: &LockStepMessage_GameStart{
+			GameStart: &gameStartMsg,
+		},
 	}
+	server.broadcastToRoom(room, startMsg)
 }
 
 // RemoveRoom 移除房间
@@ -529,12 +528,9 @@ func (r *Room) GetRoomMonitoringInfo() map[string]interface{} {
 	players := make([]map[string]interface{}, 0, len(r.Players))
 	for _, player := range r.Players {
 		playerInfo := map[string]interface{}{
-			"id":            player.ID,
+			"id":            player.Player.PlayerId,
 			"connection_id": player.ConnectionID,
-		}
-		if player.State != nil {
-			playerInfo["online"] = player.State.Online
-			playerInfo["last_frame_id"] = player.State.LastFrameId
+			"status":        player.Player.Status,
 		}
 		players = append(players, playerInfo)
 	}

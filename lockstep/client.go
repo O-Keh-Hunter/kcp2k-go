@@ -17,15 +17,16 @@ type LockStepClient struct {
 	roomID         RoomID
 	currentFrameID FrameID
 	lastFrameID    FrameID
-	frameBuffer    map[FrameID]*Frame
+	frameBuffer    map[FrameID]*FrameMessage
 	mutex          sync.RWMutex
 	connected      bool
 	running        bool
 	stopChan       chan struct{}
 
 	// 回调函数
-	onPlayerJoined func(playerID PlayerID)
-	onPlayerLeft   func(playerID PlayerID)
+	onPlayerJoined  func(playerID PlayerID)
+	onPlayerReadyed func(playerID PlayerID)
+	onPlayerLeft    func(playerID PlayerID)
 
 	onGameStarted func()
 	onGameEnded   func()
@@ -33,13 +34,21 @@ type LockStepClient struct {
 	onConnectedCallback    func()
 	onDisconnectedCallback func()
 
+	onLoginResponseCallback      func(errorCode ErrorCode, errorMessage string)
+	onLogoutResponseCallback     func(errorCode ErrorCode, errorMessage string)
+	onJoinRoomResponseCallback   func(errorCode ErrorCode, errorMessage string)
+	onReadyResponseCallback      func(errorCode ErrorCode, errorMessage string)
+	onBroadcastReceivedCallback  func(playerID PlayerID, data []byte)
+	onPlayerStateChangedCallback func(playerID PlayerID, status PlayerStatus, reason string)
+	onRoomStateChangedCallback   func(status RoomStatus)
+
 	onErrorCallback func(error)
 
 	// 本地输入序列号
-	nextSequenceID uint32
+	nextSequenceID int32
 
 	// 序列号跟踪（用于丢包检测）- 只记录自己的序列号
-	lastSeqID uint32 // 最后接收到的自己的SequenceId
+	lastSeqID int32 // 最后接收到的自己的SequenceId
 
 	// 初始化统计信息
 	FrameStats   *FrameStats
@@ -48,8 +57,9 @@ type LockStepClient struct {
 
 // ClientCallbacks 客户端回调函数
 type ClientCallbacks struct {
-	OnPlayerJoined func(playerID PlayerID)
-	OnPlayerLeft   func(playerID PlayerID)
+	OnPlayerJoined  func(playerID PlayerID)
+	OnPlayerReadyed func(playerID PlayerID)
+	OnPlayerLeft    func(playerID PlayerID)
 
 	OnGameStarted func()
 	OnGameEnded   func()
@@ -57,25 +67,41 @@ type ClientCallbacks struct {
 	OnConnected    func()
 	OnDisconnected func()
 
+	OnLoginResponse      func(errorCode ErrorCode, errorMessage string)
+	OnLogoutResponse     func(errorCode ErrorCode, errorMessage string)
+	OnJoinRoomResponse   func(errorCode ErrorCode, errorMessage string)
+	OnReadyResponse      func(errorCode ErrorCode, errorMessage string)
+	OnBroadcastReceived  func(playerID PlayerID, data []byte)
+	OnPlayerStateChanged func(playerID PlayerID, status PlayerStatus, reason string)
+	OnRoomStateChanged   func(status RoomStatus)
+
 	OnError func(error)
 }
 
 // NewLockStepClient 创建新的帧同步客户端
 func NewLockStepClient(config *LockStepConfig, playerID PlayerID, callbacks ClientCallbacks) *LockStepClient {
 	client := &LockStepClient{
-		config:         *config,
-		playerID:       playerID,
-		currentFrameID: 0,
-		lastFrameID:    0,
-		frameBuffer:    make(map[FrameID]*Frame),
-		stopChan:       make(chan struct{}),
-		onPlayerJoined: callbacks.OnPlayerJoined,
-		onPlayerLeft:   callbacks.OnPlayerLeft,
-		onGameStarted:  callbacks.OnGameStarted,
-		onGameEnded:    callbacks.OnGameEnded,
+		config:          *config,
+		playerID:        playerID,
+		currentFrameID:  0,
+		lastFrameID:     0,
+		frameBuffer:     make(map[FrameID]*FrameMessage),
+		stopChan:        make(chan struct{}),
+		onPlayerJoined:  callbacks.OnPlayerJoined,
+		onPlayerReadyed: callbacks.OnPlayerReadyed,
+		onPlayerLeft:    callbacks.OnPlayerLeft,
+		onGameStarted:   callbacks.OnGameStarted,
+		onGameEnded:     callbacks.OnGameEnded,
 
 		onConnectedCallback:    callbacks.OnConnected,
 		onDisconnectedCallback: callbacks.OnDisconnected,
+
+		onLoginResponseCallback:      callbacks.OnLoginResponse,
+		onLogoutResponseCallback:     callbacks.OnLogoutResponse,
+		onReadyResponseCallback:      callbacks.OnReadyResponse,
+		onBroadcastReceivedCallback:  callbacks.OnBroadcastReceived,
+		onPlayerStateChangedCallback: callbacks.OnPlayerStateChanged,
+		onRoomStateChangedCallback:   callbacks.OnRoomStateChanged,
 
 		onErrorCallback: callbacks.OnError,
 		nextSequenceID:  0, // 初始化nextSequenceID
@@ -170,7 +196,7 @@ func (c *LockStepClient) Disconnect() {
 }
 
 // JoinRoom 加入房间
-func (c *LockStepClient) JoinRoom(roomID RoomID) error {
+func (c *LockStepClient) JoinRoom(roomID RoomID, playerID PlayerID) error {
 	c.mutex.Lock()
 	defer c.mutex.Unlock()
 
@@ -181,15 +207,16 @@ func (c *LockStepClient) JoinRoom(roomID RoomID) error {
 	c.roomID = roomID
 
 	// 发送加入房间请求
-	joinReq := JoinRoomRequest{
+	joinReq := &JoinRoomRequest{
 		RoomId:   string(roomID),
-		PlayerId: uint32(c.playerID),
+		PlayerId: playerID,
 	}
 
-	joinPayload, _ := proto.Marshal(&joinReq)
 	joinMsg := &LockStepMessage{
-		Type:    LockStepMessage_JOIN_ROOM,
-		Payload: joinPayload,
+		Type: LockStepMessage_JOIN_ROOM_REQ,
+		Body: &LockStepMessage_JoinRoomReq{
+			JoinRoomReq: joinReq,
+		},
 	}
 
 	c.sendMessage(joinMsg, kcp2k.KcpReliable)
@@ -208,19 +235,71 @@ func (c *LockStepClient) SendInput(inputData []byte, inputFlag InputMessage_Inpu
 	// 创建输入消息
 	c.nextSequenceID++
 	input := InputMessage{
-		SequenceId: c.nextSequenceID,
-		Timestamp:  uint64(time.Now().UnixMilli()),
+		SequenceId: int32(c.nextSequenceID),
+		Timestamp:  int64(time.Now().UnixMilli()),
 		Data:       inputData,
 		Flag:       inputFlag,
 	}
 
-	inputPayload, _ := proto.Marshal(&input)
 	inputMsg := &LockStepMessage{
-		Type:    LockStepMessage_INPUT,
-		Payload: inputPayload,
+		Type: LockStepMessage_INPUT,
+		Body: &LockStepMessage_Input{
+			Input: &input,
+		},
 	}
 
 	c.sendMessage(inputMsg, kcp2k.KcpReliable)
+	return nil
+}
+
+// SendLogin 发送登录请求
+func (c *LockStepClient) SendLogin(token string, playerID int32) error {
+	c.mutex.Lock()
+	defer c.mutex.Unlock()
+
+	if !c.connected {
+		return fmt.Errorf("client is not connected")
+	}
+
+	// 创建登录请求
+	loginReq := &LoginRequest{
+		Token:    token,
+		PlayerId: playerID,
+	}
+
+	msg := &LockStepMessage{
+		Type: LockStepMessage_LOGIN_REQ,
+		Body: &LockStepMessage_LoginReq{
+			LoginReq: loginReq,
+		},
+	}
+
+	c.sendMessage(msg, kcp2k.KcpReliable)
+	Log.Debug("[Player %d] Sent login request", c.playerID)
+	return nil
+}
+
+// SendLogout 发送登出请求
+func (c *LockStepClient) SendLogout() error {
+	c.mutex.Lock()
+	defer c.mutex.Unlock()
+
+	if !c.connected {
+		return fmt.Errorf("client is not connected")
+	}
+
+	// 创建登出请求
+	logoutReq := &LogoutRequest{}
+
+	msg := &LockStepMessage{
+		Type: LockStepMessage_LOGOUT_REQ,
+		Body: &LockStepMessage_LogoutReq{
+			LogoutReq: logoutReq,
+		},
+	}
+
+	c.sendMessage(msg, kcp2k.KcpReliable)
+	Log.Debug("[Player %d] Sent logout request", c.playerID)
 	return nil
 }
 
@@ -234,20 +313,15 @@ func (c *LockStepClient) SendReady(ready bool) error {
 	}
 
 	// 创建准备消息
-	readyMsg := ReadyMessage{
-		PlayerId: uint32(c.playerID),
-		Ready:    ready,
-		RoomId:   string(c.roomID),
-	}
-
-	readyPayload, err := proto.Marshal(&readyMsg)
-	if err != nil {
-		return fmt.Errorf("failed to marshal ready message: %v", err)
+	readyReq := &ReadyRequest{
+		Ready: ready,
 	}
 
 	msg := &LockStepMessage{
-		Type:    LockStepMessage_READY,
-		Payload: readyPayload,
+		Type: LockStepMessage_READY_REQ,
+		Body: &LockStepMessage_ReadyReq{
+			ReadyReq: readyReq,
+		},
 	}
 
 	c.sendMessage(msg, kcp2k.KcpReliable)
@@ -255,8 +329,8 @@ func (c *LockStepClient) SendReady(ready bool) error {
 	return nil
 }
 
-// RequestFrames 请求补帧
-func (c *LockStepClient) RequestFrames(startFrameID, count uint32) error {
+// SendBroadcast 发送广播消息
+func (c *LockStepClient) SendBroadcast(data []byte) error {
 	c.mutex.Lock()
 	defer c.mutex.Unlock()
 
@@ -264,19 +338,42 @@ func (c *LockStepClient) RequestFrames(startFrameID, count uint32) error {
 		return fmt.Errorf("client is not connected")
 	}
 
-	req := FrameRequest{
-		FrameId: uint32(startFrameID),
-		Count:   count,
+	// 创建广播请求
+	broadcastReq := &BroadcastRequest{
+		Data: data,
 	}
 
-	reqPayload, err := proto.Marshal(&req)
-	if err != nil {
-		return err
+	msg := &LockStepMessage{
+		Type: LockStepMessage_BROADCAST_REQ,
+		Body: &LockStepMessage_BroadcastReq{
+			BroadcastReq: broadcastReq,
+		},
+	}
+
+	c.sendMessage(msg, kcp2k.KcpReliable)
+	Log.Debug("[Player %d] Sent broadcast message", c.playerID)
+	return nil
+}
+
+// RequestFrames 请求补帧
+func (c *LockStepClient) RequestFrames(startFrameID, count int32) error {
+	c.mutex.Lock()
+	defer c.mutex.Unlock()
+
+	if !c.connected {
+		return fmt.Errorf("client is not connected")
+	}
+
+	req := &FrameRequest{
+		FrameId: int32(startFrameID),
+		Count:   int32(count),
 	}
 
 	reqMsg := &LockStepMessage{
-		Type:    LockStepMessage_FRAME_REQ,
-		Payload: reqPayload,
+		Type: LockStepMessage_FRAME_REQ,
+		Body: &LockStepMessage_FrameReq{
+			FrameReq: req,
+		},
 	}
 
 	c.sendMessage(reqMsg, kcp2k.KcpReliable)
@@ -362,17 +459,54 @@ func (c *LockStepClient) onError(error kcp2k.ErrorCode, reason string) {
 func (c *LockStepClient) handleMessage(msg *LockStepMessage) {
 	switch msg.Type {
 	case LockStepMessage_FRAME:
-		c.handleFrame(msg.Payload)
-	case LockStepMessage_FRAME_RESP:
-		c.handleFrameResponse(msg.Payload)
-	case LockStepMessage_START:
-		c.handleGameStart(msg.Payload)
-	case LockStepMessage_PLAYER_STATE:
-		c.handlePlayerState(msg.Payload)
+		if frame := msg.GetFrame(); frame != nil {
+			data, _ := proto.Marshal(frame)
+			c.handleFrame(data)
+		}
+	case LockStepMessage_BROADCAST:
+		if broadcast := msg.GetBroadcast(); broadcast != nil {
+			c.handleBroadcast(broadcast)
+		}
+	case LockStepMessage_GAME_START:
+		if gameStart := msg.GetGameStart(); gameStart != nil {
+			data, _ := proto.Marshal(gameStart)
+			c.handleGameStart(data)
+		}
 	case LockStepMessage_ROOM_STATE:
-		c.handleRoomState(msg.Payload)
-	case LockStepMessage_ERROR:
-		c.handleError(msg.Payload)
+		if roomState := msg.GetRoomState(); roomState != nil {
+			data, _ := proto.Marshal(roomState)
+			c.handleRoomState(data)
+		}
+	case LockStepMessage_PLAYER_STATE:
+		if playerState := msg.GetPlayerState(); playerState != nil {
+			data, _ := proto.Marshal(playerState)
+			c.handlePlayerState(data)
+		}
+	case LockStepMessage_LOGIN_RESP:
+		if loginResp := msg.GetLoginResp(); loginResp != nil {
+			c.handleLoginResponse(loginResp)
+		}
+	case LockStepMessage_LOGOUT_RESP:
+		if logoutResp := msg.GetLogoutResp(); logoutResp != nil {
+			c.handleLogoutResponse(logoutResp)
+		}
+	case LockStepMessage_JOIN_ROOM_RESP:
+		if joinRoomResp := msg.GetJoinRoomResp(); joinRoomResp != nil {
+			c.handleJoinRoomResponse(joinRoomResp)
+		}
+	case LockStepMessage_READY_RESP:
+		if readyResp := msg.GetReadyResp(); readyResp != nil {
+			c.handleReadyResponse(readyResp)
+		}
+	case LockStepMessage_FRAME_RESP:
+		if frameResp := msg.GetFrameResp(); frameResp != nil {
+			data, _ := proto.Marshal(frameResp)
+			c.handleFrameResponse(data)
+		}
+	case LockStepMessage_BROADCAST_RESP:
+		if broadcastResp := msg.GetBroadcastResp(); broadcastResp != nil {
+			c.handleBroadcastResponse(broadcastResp)
+		}
 	default:
 		Log.Warning("Unknown message type: %d", msg.Type)
 	}
@@ -380,7 +514,7 @@ func (c *LockStepClient) handleMessage(msg *LockStepMessage) {
 
 // handleFrame 处理帧数据
 func (c *LockStepClient) handleFrame(payload []byte) {
-	var frame Frame
+	var frame FrameMessage
 	err := proto.Unmarshal(payload, &frame)
 	if err != nil {
 		Log.Error("Failed to unmarshal frame: %v", err)
@@ -400,7 +534,7 @@ func (c *LockStepClient) handleFrame(payload []byte) {
 }
 
 // updateJitterStats 更新Jitter统计
-func (c *LockStepClient) updateJitterStats(frame *Frame) {
+func (c *LockStepClient) updateJitterStats(frame *FrameMessage) {
 	if frame.RecvTickMs > 0 {
 		// 将RecvTickMS转换为时间
 		recvTime := time.Unix(0, int64(frame.RecvTickMs)*int64(time.Millisecond))
@@ -411,7 +545,7 @@ func (c *LockStepClient) updateJitterStats(frame *Frame) {
 }
 
 // storeFrameAndDetectLoss 存储帧数据并检测丢包
-func (c *LockStepClient) storeFrameAndDetectLoss(frame *Frame) bool {
+func (c *LockStepClient) storeFrameAndDetectLoss(frame *FrameMessage) bool {
 	c.mutex.Lock()
 	defer c.mutex.Unlock()
 
@@ -448,7 +582,7 @@ func (c *LockStepClient) detectPacketLoss(dataCollection []*RelayData) bool {
 }
 
 // processSequenceID 处理序列号并检测丢包
-func (c *LockStepClient) processSequenceID(sequenceID uint32) bool {
+func (c *LockStepClient) processSequenceID(sequenceID int32) bool {
 	if c.lastSeqID == 0 {
 		// 第一次收到自己的包，直接记录
 		c.lastSeqID = sequenceID
@@ -503,8 +637,8 @@ func (c *LockStepClient) handleFrameResponse(payload []byte) {
 		return
 	}
 
-	if !resp.Success {
-		Log.Error("Frame request failed: %s", resp.Error)
+	if resp.Base.ErrorCode != ErrorCode_ERROR_CODE_SUCC {
+		Log.Error("Frame request failed: %s", resp.Base.ErrorCode)
 		return
 	}
 
@@ -522,7 +656,7 @@ func (c *LockStepClient) handleFrameResponse(payload []byte) {
 
 		// 处理输入延迟统计
 		for _, relayData := range frame.DataCollection {
-			if relayData.PlayerId == uint32(c.playerID) {
+			if relayData.PlayerId == int32(c.playerID) {
 				// 使用服务器计算好的延迟时间进行统计
 				inputLatency := time.Duration(relayData.DelayMs) * time.Millisecond
 				c.IncrementInputLatencyStats(inputLatency)
@@ -577,12 +711,18 @@ func (c *LockStepClient) handlePlayerState(payload []byte) {
 		return
 	}
 
-	if playerStateMsg.State.Online {
+	switch playerStateMsg.Status {
+	case PlayerStatus_PLAYER_STATUS_ONLINE:
 		// 玩家加入或重连
 		if c.onPlayerJoined != nil {
 			c.onPlayerJoined(PlayerID(playerStateMsg.PlayerId))
 		}
-	} else {
+	case PlayerStatus_PLAYER_STATUS_READY:
+		// 玩家准备
+		if c.onPlayerReadyed != nil {
+			c.onPlayerReadyed(PlayerID(playerStateMsg.PlayerId))
+		}
+	default:
 		// 玩家离线
 		if c.onPlayerLeft != nil {
 			c.onPlayerLeft(PlayerID(playerStateMsg.PlayerId))
@@ -590,10 +730,53 @@ func (c *LockStepClient) handlePlayerState(payload []byte) {
 	}
 
 	// 打印玩家状态变更信息（取消注释以便调试）
-	Log.Debug("Player %d state changed: online=%v, reason: %s",
+	Log.Debug("Player %d state changed: status=%v, reason: %s",
 		playerStateMsg.PlayerId,
-		playerStateMsg.State.Online,
+		playerStateMsg.Status,
 		playerStateMsg.Reason)
+}
+
+// handleLoginResponse 处理登录响应
+func (c *LockStepClient) handleLoginResponse(resp *LoginResponse) {
+	if c.onLoginResponseCallback != nil {
+		c.onLoginResponseCallback(resp.Base.ErrorCode, resp.Base.ErrorMessage)
+	}
+}
+
+// handleLogoutResponse 处理登出响应
+func (c *LockStepClient) handleLogoutResponse(resp *LogoutResponse) {
+	if c.onLogoutResponseCallback != nil {
+		c.onLogoutResponseCallback(resp.Base.ErrorCode, resp.Base.ErrorMessage)
+	}
+}
+
+func (c *LockStepClient) handleJoinRoomResponse(resp *JoinRoomResponse) {
+	if c.onJoinRoomResponseCallback != nil {
+		c.onJoinRoomResponseCallback(resp.Base.ErrorCode, resp.Base.ErrorMessage)
+	}
+}
+
+// handleReadyResponse 处理准备响应
+func (c *LockStepClient) handleReadyResponse(resp *ReadyResponse) {
+	if c.onReadyResponseCallback != nil {
+		c.onReadyResponseCallback(resp.Base.ErrorCode, resp.Base.ErrorMessage)
+	}
+}
+
+// handleBroadcastResponse 处理广播响应
+func (c *LockStepClient) handleBroadcastResponse(resp *BroadcastResponse) {
+	if resp.Base.ErrorCode != ErrorCode_ERROR_CODE_SUCC {
+		Log.Error("Broadcast failed: %s", resp.Base.ErrorMessage)
+		return
+	}
+	Log.Debug("[Player %d] Broadcast sent successfully", c.playerID)
+}
+
+// handleBroadcast 处理广播消息
+func (c *LockStepClient) handleBroadcast(broadcast *BroadcastMessage) {
+	if c.onBroadcastReceivedCallback != nil {
+		c.onBroadcastReceivedCallback(PlayerID(broadcast.PlayerId), broadcast.Data)
+	}
 }
 
 // handleRoomState 处理房间状态
@@ -605,16 +788,21 @@ func (c *LockStepClient) handleRoomState(payload []byte) {
 		return
 	}
 
-	Log.Debug("Room %s state changed: status=%d, players=%d/%d, currentFrame=%d, reason: %s",
+	Log.Debug("Room %s state changed: status=%v, players=%d/%d, currentFrame=%d, reason: %s",
 		roomStateMsg.RoomId,
-		roomStateMsg.State.Status,
-		roomStateMsg.State.CurrentPlayers,
-		roomStateMsg.State.MaxPlayers,
-		roomStateMsg.State.CurrentFrameId,
+		roomStateMsg.Status,
+		roomStateMsg.CurrentPlayers,
+		roomStateMsg.MaxPlayers,
+		roomStateMsg.CurrentFrameId,
 		roomStateMsg.Reason)
 
+	// 触发房间状态变更回调
+	if c.onRoomStateChangedCallback != nil {
+		c.onRoomStateChangedCallback(RoomStatus(roomStateMsg.Status))
+	}
+
 	// 根据房间状态变更触发相应的回调
-	switch RoomStatus(roomStateMsg.State.Status) {
+	switch RoomStatus(roomStateMsg.Status) {
 	case RoomStatus_ROOM_STATUS_IDLE:
 		if c.running {
 			c.mutex.Lock()
@@ -647,44 +835,23 @@ func (c *LockStepClient) handleRoomState(payload []byte) {
 }
 
 // handleError 处理错误消息
-func (c *LockStepClient) handleError(payload []byte) {
-	var errorMsg ErrorMessage
-	err := proto.Unmarshal(payload, &errorMsg)
-	if err != nil {
-		Log.Error("Failed to unmarshal error message: %v", err)
-		return
-	}
-
-	Log.Error("Received error %d: %s - %s", errorMsg.Code, errorMsg.Message, errorMsg.Details)
+func (c *LockStepClient) handleError(response *BaseResponse) {
+	Log.Error("Received error %d: %s", response.ErrorCode, response.ErrorMessage)
 
 	// 根据错误码执行相应的处理
-	switch errorMsg.Code {
-	case ErrorCodeRoomNotFound:
+	switch response.ErrorCode {
+	case ErrorCode_ERROR_CODE_ROOM_NOT_FOUND:
 		if c.onErrorCallback != nil {
-			c.onErrorCallback(fmt.Errorf("room not found: %s", errorMsg.Details))
+			c.onErrorCallback(fmt.Errorf("room not found"))
 		}
-	case ErrorCodeRoomFull:
+	case ErrorCode_ERROR_CODE_ROOM_FULL:
 		if c.onErrorCallback != nil {
-			c.onErrorCallback(fmt.Errorf("room is full: %s", errorMsg.Details))
-		}
-	case ErrorCodeConnectionLost:
-		if c.onErrorCallback != nil {
-			c.onErrorCallback(fmt.Errorf("connection lost: %s", errorMsg.Details))
-		}
-	case ErrorCodeTimeout:
-		if c.onErrorCallback != nil {
-			c.onErrorCallback(fmt.Errorf("operation timeout: %s", errorMsg.Details))
-		}
-	case ErrorCodeSyncFailed:
-		// 同步失败，可能需要重新请求帧数据
-		Log.Warning("Sync failed, requesting frame data...")
-		if c.onErrorCallback != nil {
-			c.onErrorCallback(fmt.Errorf("synchronization failed: %s", errorMsg.Details))
+			c.onErrorCallback(fmt.Errorf("room is full"))
 		}
 	default:
 		// 通用错误处理
 		if c.onErrorCallback != nil {
-			c.onErrorCallback(fmt.Errorf("error %d: %s - %s", errorMsg.Code, errorMsg.Message, errorMsg.Details))
+			c.onErrorCallback(fmt.Errorf("error %d: %s", response.ErrorCode, response.ErrorMessage))
 		}
 	}
 }
@@ -865,7 +1032,7 @@ func (c *LockStepClient) GetClientStats() map[string]interface{} {
 }
 
 // PopFrame 弹出下一帧数据，如果没有可用帧则返回nil
-func (c *LockStepClient) PopFrame() *Frame {
+func (c *LockStepClient) PopFrame() *FrameMessage {
 	c.mutex.Lock()
 	defer c.mutex.Unlock()
 

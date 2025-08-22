@@ -86,8 +86,8 @@ func runServer() {
 		for {
 			select {
 			case <-ticker.C:
-				stats := server.GetServerStats()
-				log.Printf("Server Stats: %+v", stats)
+				// stats := server.GetServerStats()
+				// log.Printf("Server Stats: %+v", stats)
 
 				// 显示所有房间状态
 				rooms := server.GetRooms()
@@ -136,13 +136,28 @@ func runClient() {
 		OnConnected: func() {
 			log.Printf("[Player %d] Successfully connected to server", playerID)
 
-			// 加入房间
-			roomID := lockstep.RoomID("room1")
-			err := client.JoinRoom(roomID)
+			// 发送登录请求
+			err := client.SendLogin("test_token", playerID)
 			if err != nil {
-				log.Printf("Failed to join room: %v", err)
+				log.Printf("[Player %d] Failed to send login request: %v", playerID, err)
+				return
+			}
+			log.Printf("[Player %d] Sent login request", playerID)
+		},
+		OnLoginResponse: func(errorCode lockstep.ErrorCode, errorMessage string) {
+			if errorCode != lockstep.ErrorCode_ERROR_CODE_SUCC {
+				log.Printf("[Player %d] Login failed: %s (code: %d)", playerID, errorMessage, errorCode)
+				return
+			}
+			log.Printf("[Player %d] Login successful", playerID)
+
+			// 登录成功后加入房间
+			roomID := lockstep.RoomID("room1")
+			err := client.JoinRoom(roomID, playerID)
+			if err != nil {
+				log.Printf("[Player %d] Failed to join room: %v", playerID, err)
 			} else {
-				log.Printf("[Player %d] Joined room: %s", playerID, roomID)
+				log.Printf("[Player %d] Sent join room request: %s", playerID, roomID)
 			}
 		},
 		OnDisconnected: func() {
@@ -158,6 +173,17 @@ func runClient() {
 				} else {
 					log.Printf("[Player %d] Sent ready signal", playerID)
 				}
+
+				// 发送广播消息
+				go func() {
+					time.Sleep(2 * time.Second) // 等待2秒后发送广播
+					err := client.SendBroadcast([]byte("Hello everyone!"))
+					if err != nil {
+						log.Printf("[Player %d] Failed to send broadcast: %v", playerID, err)
+					} else {
+						log.Printf("[Player %d] Sent broadcast message", playerID)
+					}
+				}()
 			} else {
 				log.Printf("[Player %d] Player %d joined", playerID, pid)
 			}
@@ -165,11 +191,28 @@ func runClient() {
 		OnPlayerLeft: func(pid lockstep.PlayerID) {
 			log.Printf("[Player %d] Player %d left", playerID, pid)
 		},
+		OnPlayerStateChanged: func(pid lockstep.PlayerID, status lockstep.PlayerStatus, reason string) {
+			log.Printf("[Player %d] Player %d state changed to %v: %s", playerID, pid, status, reason)
+		},
+		OnRoomStateChanged: func(status lockstep.RoomStatus) {
+			log.Printf("[Player %d] Room state changed to %v", playerID, status)
+		},
+		OnBroadcastReceived: func(pid lockstep.PlayerID, data []byte) {
+			log.Printf("[Player %d] Received broadcast from player %d: %s", playerID, pid, string(data))
+		},
 		OnGameStarted: func() {
 			log.Printf("[Player %d] Game started!", playerID)
 		},
 		OnGameEnded: func() {
 			log.Printf("[Player %d] Game ended!", playerID)
+
+			// 游戏结束后发送登出请求
+			err := client.SendLogout()
+			if err != nil {
+				log.Printf("[Player %d] Failed to send logout request: %v", playerID, err)
+			} else {
+				log.Printf("[Player %d] Sent logout request", playerID)
+			}
 		},
 		OnError: func(err error) {
 			log.Printf("[Player %d] Error: %v", playerID, err)
