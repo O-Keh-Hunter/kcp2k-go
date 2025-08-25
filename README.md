@@ -1,36 +1,38 @@
 # KCP2K-Go
 
-一个 https://github.com/MirrorNetworking/kcp2k Go语言实现，与 C# KCP2K 完全兼容。
+[English](README.md) | [中文](README_CN.md)
 
-## 项目简介
+A Go implementation of https://github.com/MirrorNetworking/kcp2k, fully compatible with C# KCP2K.
 
-KCP2K-Go 是 https://github.com/MirrorNetworking/kcp2k 的 Go 语言版本，它基于 github.com/xtaci/kcp-go 打造，实现了 KCP2K 完整的功能。专为游戏和实时应用设计。它提供了与Mirror Networking 的 KCP2K 完全兼容的 API，支持跨语言通信。
+## Project Overview
 
-### 主要特性
+KCP2K-Go is a Go implementation of https://github.com/MirrorNetworking/kcp2k, built on top of github.com/xtaci/kcp-go, providing complete KCP2K functionality. Designed for games and real-time applications, it offers a fully compatible API with Mirror Networking's KCP2K and supports cross-language communication.
 
-- 🚀 **高性能**: 优化的 KCP 实现，低延迟高吞吐量
-- 🔄 **跨语言兼容**: 与 C# KCP2K 完全兼容
-- 🛡️ **可靠传输**: 基于 UDP 的可靠数据传输
-- 📊 **性能监控**: 内置性能统计和监控
-- 🧪 **全面测试**: 包含压力测试和跨语言兼容性测试
-- ⚙️ **可配置**: 丰富的配置选项适应不同场景
+### Key Features
 
-## 快速开始
+- 🚀 **High Performance**: Optimized KCP implementation with low latency and high throughput
+- 🔄 **Cross-Language Compatible**: Fully compatible with C# KCP2K
+- 🛡️ **Reliable Transport**: UDP-based reliable data transmission
+- 📊 **Performance Monitoring**: Built-in performance statistics and monitoring
+- 🧪 **Comprehensive Testing**: Includes stress testing and cross-language compatibility tests
+- ⚙️ **Configurable**: Rich configuration options for different scenarios
 
-### 环境要求
+## Quick Start
+
+### Requirements
 
 - Go 1.19+
-- .NET 8.0+ (用于跨语言测试)
+- .NET 8.0+ (for cross-language testing)
 
-### 安装
+### Installation
 
 ```bash
 go get https://github.com/O-Keh-Hunter/kcp2k-go
 ```
 
-### 基本使用
+### Basic Usage
 
-#### 服务端
+#### Server
 
 ```go
 package main
@@ -67,7 +69,7 @@ func main() {
 }
 ```
 
-#### 客户端
+#### Client
 
 ```go
 package main
@@ -105,15 +107,34 @@ func main() {
 }
 ```
 
-## 配置选项
+### Example Usage
+
+The project includes a comprehensive echo example with modern CLI interface:
+
+```bash
+# Start server with default settings
+go run examples/echo/main.go server
+
+# Start client with default settings
+go run examples/echo/main.go client
+
+# Custom configuration examples
+go run examples/echo/main.go -port 9999 -verbose server
+go run examples/echo/main.go -host 192.168.1.100 -port 9999 -message "Hello World" client
+
+# Show help for all options
+go run examples/echo/main.go -help
+```
+
+## Configuration Options
 
 ```go
 config := &kcp.KcpConfig{
     DualMode:         false,
     RecvBufferSize:   1024 * 1024 * 7,  // 7MB
     SendBufferSize:   1024 * 1024 * 7,  // 7MB
-    Timeout:          10000,             // 10秒
-    Interval:         10,                // 10毫秒
+    Timeout:          10000,             // 10 seconds
+    Interval:         10,                // 10 milliseconds
     FastResend:       2,
     CongestionWindow: false,
     SendWindowSize:   4096,
@@ -122,100 +143,101 @@ config := &kcp.KcpConfig{
 }
 ```
 
-## 测试
+## Testing
 
-### 运行单元测试
+### Run Unit Tests
 
 ```bash
 go test ./...
 ```
 
-### 跨语言兼容性测试
+### Cross-Language Compatibility Tests
 
 ```bash
-# 运行所有跨语言测试
+# Run all cross-language tests
 ./tools/scripts/testing/run_all_tests.sh
 
-# 运行特定场景
+# Run specific scenarios
 ./tools/scripts/testing/run_csharp_server_go_client.sh
 ./tools/scripts/testing/run_go_server_csharp_client.sh
 ```
 
-### 压力测试
+### Stress Testing
 
 ```bash
-# 小规模压力测试
+# Small-scale stress test
 ./tools/scripts/performance/test_small.sh
 
-# 大规模压力测试
+# Large-scale stress test
 ./tools/scripts/performance/test_full.sh
 ```
 
-## 项目结构
+## Project Structure
 
 ```
 kcp2k-go/
-├── README.md                    # 项目说明
-├── go.mod                       # Go 模块定义
-├── *.go                         # 核心实现文件
-├── examples/                    # 示例代码
-│   └── echo/                    # Echo 服务器示例
-├── tests/                       # 测试套件
-│   ├── csharp_server_go_client/ # C# 服务端 + Go 客户端测试
-│   ├── go_server_csharp_client/ # Go 服务端 + C# 客户端测试
-│   ├── stress_client/           # 压力测试客户端
-│   ├── stress_server/           # 压力测试服务端
-│   └── stress_test/             # 压力测试主控程序
-├── third_party/                 # 第三方依赖
-│   └── kcp2k/                   # C# KCP2K 实现
-└── tools/                       # 工具脚本
+├── README.md                    # Project documentation (English)
+├── README_CN.md                 # Project documentation (Chinese)
+├── go.mod                       # Go module definition
+├── *.go                         # Core implementation files
+├── examples/                    # Example code
+│   └── echo/                    # Echo server example
+├── tests/                       # Test suites
+│   ├── csharp_server_go_client/ # C# server + Go client tests
+│   ├── go_server_csharp_client/ # Go server + C# client tests
+│   ├── stress_client/           # Stress test client
+│   ├── stress_server/           # Stress test server
+│   └── stress_test/             # Stress test controller
+├── third_party/                 # Third-party dependencies
+│   └── kcp2k/                   # C# KCP2K implementation
+└── tools/                       # Tool scripts
     └── scripts/
-        ├── testing/             # 测试脚本
-        └── performance/         # 性能测试脚本
+        ├── testing/             # Test scripts
+        └── performance/         # Performance test scripts
 ```
 
-## 性能特性
+## Performance Characteristics
 
-- **低延迟**: 针对实时应用优化的传输延迟
-- **高吞吐量**: 支持大量并发连接
-- **内存优化**: 高效的内存使用和垃圾回收友好
-- **可扩展**: 支持水平扩展的架构设计
+- **Low Latency**: Optimized transmission delay for real-time applications
+- **High Throughput**: Supports large numbers of concurrent connections
+- **Memory Optimized**: Efficient memory usage and garbage collection friendly
+- **Scalable**: Architecture designed for horizontal scaling
 
-## 兼容性
+## Compatibility
 
-- ✅ 与C# KCP2K 完全兼容
-- ✅ 支持所有 KCP2K 的消息类型和配置
-- ✅ 跨平台支持 (Windows, macOS, Linux)
+- ✅ Fully compatible with C# KCP2K
+- ✅ Supports all KCP2K message types and configurations
+- ✅ Cross-platform support (Windows, macOS, Linux)
 
-## 贡献
+## Contributing
 
-欢迎提交Issue和Pull Request！
+Issues and Pull Requests are welcome!
 
-### 开发环境设置
+### Development Environment Setup
 
-1. 克隆仓库
+1. Clone the repository
 ```bash
 git clone https://github.com/O-Keh-Hunter/kcp2k-go.git
 cd kcp2k-go
 ```
 
-2. 初始化子模块
+2. Initialize submodules
 ```bash
 git submodule update --init --recursive
 ```
 
-3. 运行测试
+3. Run tests
 ```bash
 go test ./...
 ./tools/scripts/testing/run_all_tests.sh
 ```
 
-## 许可证
+## License
 
-MIT License - 详见 [LICENSE](LICENSE) 文件
+MIT License - see [LICENSE](LICENSE) file for details
 
-## 相关项目
+## Related Projects
 
-- [KCP2K](https://github.com/MirrorNetworking/kcp2k) - C# KCP实现
-- [Mirror Networking](https://github.com/MirrorNetworking/Mirror) - Unity网络库
-- [KCP](https://github.com/skywind3000/kcp) - 原始KCP协议实现
+- [KCP2K](https://github.com/MirrorNetworking/kcp2k) - C# KCP implementation
+- [Mirror Networking](https://github.com/MirrorNetworking/Mirror) - Unity networking library
+- [KCP](https://github.com/skywind3000/kcp) - Original KCP protocol implementation
