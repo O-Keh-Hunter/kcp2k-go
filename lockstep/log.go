@@ -1,7 +1,6 @@
 package lockstep
 
 import (
-	"fmt"
 	"log"
 )
 
@@ -13,13 +12,13 @@ var Log = struct {
 	Error   func(format string, v ...interface{})
 }{
 	Debug: func(format string, v ...interface{}) {
-		fmt.Printf("[DEBUG] "+format+"\n", v...)
+		log.Printf("[DEBUG] "+format+"\n", v...)
 	},
 	Info: func(format string, v ...interface{}) {
-		fmt.Printf("[INFO] "+format+"\n", v...)
+		log.Printf("[INFO] "+format+"\n", v...)
 	},
 	Warning: func(format string, v ...interface{}) {
-		fmt.Printf("[WARN] "+format+"\n", v...)
+		log.Printf("[WARN] "+format+"\n", v...)
 	},
 	Error: func(format string, v ...interface{}) {
 		log.Printf("[ERROR] "+format, v...)

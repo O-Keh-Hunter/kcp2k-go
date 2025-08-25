@@ -34,6 +34,7 @@ const (
 	ErrorCode_ERROR_CODE_PLAYER_NOT_FOUND ErrorCode = 6 // 玩家不存在
 	ErrorCode_ERROR_CODE_ALREADY_IN_ROOM  ErrorCode = 7 // 玩家已在房间
 	ErrorCode_ERROR_CODE_NOT_IN_ROOM      ErrorCode = 8 // 玩家不在房间
+	ErrorCode_ERROR_CODE_ROOM_ENDED       ErrorCode = 9 // 房间已结束
 )
 
 // Enum value maps for ErrorCode.
@@ -48,6 +49,7 @@ var (
 		6: "ERROR_CODE_PLAYER_NOT_FOUND",
 		7: "ERROR_CODE_ALREADY_IN_ROOM",
 		8: "ERROR_CODE_NOT_IN_ROOM",
+		9: "ERROR_CODE_ROOM_ENDED",
 	}
 	ErrorCode_value = map[string]int32{
 		"ERROR_CODE_SUCC":             0,
@@ -59,6 +61,7 @@ var (
 		"ERROR_CODE_PLAYER_NOT_FOUND": 6,
 		"ERROR_CODE_ALREADY_IN_ROOM":  7,
 		"ERROR_CODE_NOT_IN_ROOM":      8,
+		"ERROR_CODE_ROOM_ENDED":       9,
 	}
 )
 
@@ -1839,7 +1842,7 @@ const file_lockstep_lockstep_proto_rawDesc = "" +
 	"\n" +
 	"ROOM_STATE\x10\x0f\x12\r\n" +
 	"\tBROADCAST\x10\x10B\x06\n" +
-	"\x04body*\x8b\x02\n" +
+	"\x04body*\xa6\x02\n" +
 	"\tErrorCode\x12\x13\n" +
 	"\x0fERROR_CODE_SUCC\x10\x00\x12\x16\n" +
 	"\x12ERROR_CODE_UNKNOWN\x10\x01\x12\x1c\n" +
@@ -1849,7 +1852,8 @@ const file_lockstep_lockstep_proto_rawDesc = "" +
 	"\x14ERROR_CODE_ROOM_FULL\x10\x05\x12\x1f\n" +
 	"\x1bERROR_CODE_PLAYER_NOT_FOUND\x10\x06\x12\x1e\n" +
 	"\x1aERROR_CODE_ALREADY_IN_ROOM\x10\a\x12\x1a\n" +
-	"\x16ERROR_CODE_NOT_IN_ROOM\x10\b*\\\n" +
+	"\x16ERROR_CODE_NOT_IN_ROOM\x10\b\x12\x19\n" +
+	"\x15ERROR_CODE_ROOM_ENDED\x10\t*\\\n" +
 	"\fPlayerStatus\x12\x18\n" +
 	"\x14PLAYER_STATUS_ONLINE\x10\x00\x12\x17\n" +
 	"\x13PLAYER_STATUS_READY\x10\x01\x12\x19\n" +

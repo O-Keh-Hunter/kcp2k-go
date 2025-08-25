@@ -16,6 +16,7 @@ enum ErrorCode {
     ERROR_CODE_PLAYER_NOT_FOUND = 6;  // 玩家不存在
     ERROR_CODE_ALREADY_IN_ROOM = 7;   // 玩家已在房间
     ERROR_CODE_NOT_IN_ROOM = 8;       // 玩家不在房间
+    ERROR_CODE_ROOM_ENDED = 9;        // 房间已结束
 }
 
 // 统一响应基类

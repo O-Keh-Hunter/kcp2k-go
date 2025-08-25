@@ -161,6 +161,11 @@ func (c *KcpClient) Send(data []byte, channel KcpChannel) {
 		Log.Warning("[KCP] Client: can't send because not connected!")
 		return
 	}
+	// ensure cookie learned before any send to avoid server drops
+	if c.peer != nil && c.peer.Cookie == 0 {
+		Log.Debug("[KCP] Client: defer send until cookie learned (channel=%d, len=%d)", channel, len(data))
+		return
+	}
 	c.peer.SendData(data, channel)
 }
 

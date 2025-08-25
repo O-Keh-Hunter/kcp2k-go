@@ -288,7 +288,10 @@ func (s *KcpServer) createConnection(connectionId int, remote *net.UDPAddr) *Kcp
 		}
 	}
 	onError := func(errorCode ErrorCode, reason string) {
-		Log.Error("[KCP] Server: OnError connectionId: %d", connectionId)
+		if errorCode != ErrorCodeTimeout {
+			Log.Error("[KCP] Server: OnError connectionId: %d, errorCode: %d, reason: %s", connectionId, errorCode, reason)
+		}
+
 		if s.onError != nil {
 			s.onError(connectionId, errorCode, reason)
 		}

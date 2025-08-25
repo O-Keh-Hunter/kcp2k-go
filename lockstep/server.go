@@ -523,15 +523,21 @@ func (s *LockStepServer) handleLoginRequest(room *Room, connectionID int, req *L
 
 	// TODO: 实现token验证逻辑，验证token中的player_id和room_id
 
-	// 查找房间中的玩家
 	room.Mutex.Lock()
 	defer room.Mutex.Unlock()
 
+	// 查找房间中的玩家
 	playerID := PlayerID(req.PlayerId)
 	player, exists := room.Players[playerID]
 	if !exists {
 		// 玩家不在房间的预设列表中
 		s.sendLoginResponse(room, connectionID, ErrorCode_ERROR_CODE_PLAYER_NOT_FOUND, 0)
+		return
+	}
+
+	// 房间状态是否结束
+	if room.State.Status == RoomStatus_ROOM_STATUS_ENDED {
+		s.sendLoginResponse(room, connectionID, ErrorCode_ERROR_CODE_ROOM_ENDED, 0)
 		return
 	}
 
@@ -816,20 +822,38 @@ func (s *LockStepServer) handlePlayerInputRequest(room *Room, connectionID int, 
 }
 
 // handleInput 处理输入
-func (s *LockStepServer) handleInput(_ *Room, player *LockStepPlayer, frameID FrameID, input *InputMessage) {
+func (s *LockStepServer) handleInput(room *Room, player *LockStepPlayer, frameID FrameID, input *InputMessage) {
 	player.Mutex.Lock()
+	defer player.Mutex.Unlock()
+
 	if inputs, ok := player.InputBuffer[frameID]; ok {
 		player.InputBuffer[frameID] = append(inputs, input)
 	} else {
 		player.InputBuffer[frameID] = []*InputMessage{input}
 	}
-	player.Mutex.Unlock()
+
+	// 当发现 RelayData.SequenceId 不连续的时候，说明有丢包、或者乱序的情况发生
+	if input.SequenceId != player.LastInputSequenceId+1 {
+		Log.Error("Room %s: Player %d input sequence id not continuous, last: %d, current: %d", room.ID, player.PlayerId, player.LastInputSequenceId, input.SequenceId)
+		return
+	}
+
+	// 更新最后一次输入的序列ID
+	player.LastInputSequenceId = input.SequenceId
 }
 
 // handlePlayerReady 处理玩家准备状态
 func (s *LockStepServer) handlePlayerReadyRequest(room *Room, connectionID int, readyMsg *ReadyRequest) {
 	// 通过房间查找玩家
 	room.Mutex.RLock()
+	defer room.Mutex.RUnlock()
+
+	// 房间状态是否结束
+	if room.State.Status == RoomStatus_ROOM_STATUS_ENDED {
+		s.sendReadyResponse(room, connectionID, ErrorCode_ERROR_CODE_ROOM_ENDED)
+		return
+	}
+
 	var player *LockStepPlayer
 	for _, p := range room.Players {
 		if p.ConnectionID == connectionID {
@@ -837,7 +861,6 @@ func (s *LockStepServer) handlePlayerReadyRequest(room *Room, connectionID int, 
 			break
 		}
 	}
-	room.Mutex.RUnlock()
 
 	if player == nil {
 		s.sendReadyResponse(room, connectionID, ErrorCode_ERROR_CODE_PLAYER_NOT_FOUND)
@@ -873,7 +896,7 @@ func (s *LockStepServer) handlePlayerReadyRequest(room *Room, connectionID int, 
 	Log.Debug("Room %s: Player %d ready status changed to %v", room.ID, player.PlayerId, readyMsg.Ready)
 
 	// 通过更新房间状态来触发游戏开始检查
-	s.rooms.UpdateRoomStatus(room, s)
+	s.rooms.updateRoomStatusLocked(room, s)
 
 	// 发送准备响应
 	s.sendReadyResponse(room, connectionID, ErrorCode_ERROR_CODE_SUCC)

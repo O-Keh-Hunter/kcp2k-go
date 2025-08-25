@@ -23,10 +23,11 @@ type RoomConfig struct {
 
 // LockStepPlayer 扩展的玩家信息（包含连接信息）
 type LockStepPlayer struct {
-	*Player                                  // 嵌入protobuf生成的Player
-	ConnectionID int                         `json:"connection_id"` // KCP连接ID
-	InputBuffer  map[FrameID][]*InputMessage `json:"-"`             // 输入缓冲区
-	Mutex        sync.RWMutex                `json:"-"`             // 读写锁
+	*Player                                         // 嵌入protobuf生成的Player
+	ConnectionID        int                         `json:"connection_id"`          // KCP连接ID
+	InputBuffer         map[FrameID][]*InputMessage `json:"-"`                      // 输入缓冲区
+	LastInputSequenceId int32                       `json:"last_input_sequence_id"` // 最后一次输入的序列ID
+	Mutex               sync.RWMutex                `json:"-"`                      // 读写锁
 }
 
 // Room 房间信息
