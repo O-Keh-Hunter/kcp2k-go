@@ -1,103 +1,184 @@
 package main
 
 import (
+	"flag"
 	"fmt"
 	"log"
+	"math/rand"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
 	kcp2k "github.com/O-Keh-Hunter/kcp2k-go"
 )
 
-func main() {
-	if len(os.Args) < 2 {
-		fmt.Println("=== KCP Echo 示例 ===")
-		fmt.Println("使用方法:")
-		fmt.Println("  go run cmd/echo/main.go server  # 启动服务器")
-		fmt.Println("  go run cmd/echo/main.go client  # 启动客户端")
-		fmt.Println()
-		fmt.Println("示例:")
-		fmt.Println("  1. 先启动服务器: go run cmd/echo/main.go server")
-		fmt.Println("  2. 再启动客户端: go run cmd/echo/main.go client")
-		fmt.Println("  3. 在客户端输入消息，服务器会回显")
-		return
+var (
+	port    = flag.Int("port", 8888, "Server port")
+	host    = flag.String("host", "127.0.0.1", "Server host")
+	message = flag.String("message", "", "Custom test message (random if empty)")
+	timeout = flag.Int("timeout", 5, "Connection timeout in seconds")
+	verbose = flag.Bool("verbose", false, "Enable verbose logging")
+	help    = flag.Bool("help", false, "Show help information")
+)
+
+func printUsage() {
+	fmt.Println("=== KCP Echo Example ===")
+	fmt.Println("Usage:")
+	fmt.Printf("  %s [options] <mode>\n", os.Args[0])
+	fmt.Println()
+	fmt.Println("Modes:")
+	fmt.Println("  server    Start echo server")
+	fmt.Println("  client    Start echo client")
+	fmt.Println()
+	fmt.Println("Options:")
+	flag.PrintDefaults()
+	fmt.Println()
+	fmt.Println("Examples:")
+	fmt.Printf("  %s server                              # Start server on default port\n", os.Args[0])
+	fmt.Printf("  %s -port 9999 server                   # Start server on port 9999\n", os.Args[0])
+	fmt.Printf("  %s client                              # Connect to default server\n", os.Args[0])
+	fmt.Printf("  %s -host 192.168.1.100 -port 9999 client  # Connect to custom server\n", os.Args[0])
+	fmt.Printf("  %s -message \"Hello World\" client        # Send custom message\n", os.Args[0])
+}
+
+func validateArgs() (string, error) {
+	flag.Parse()
+
+	if *help {
+		printUsage()
+		os.Exit(0)
 	}
 
-	mode := os.Args[1]
+	args := flag.Args()
+	if len(args) == 0 {
+		return "", fmt.Errorf("mode is required")
+	}
+
+	if len(args) > 1 {
+		return "", fmt.Errorf("too many arguments")
+	}
+
+	mode := strings.ToLower(args[0])
+	if mode != "server" && mode != "client" {
+		return "", fmt.Errorf("invalid mode: %s (supported: server, client)", mode)
+	}
+
+	// Validate port range
+	if *port < 1 || *port > 65535 {
+		return "", fmt.Errorf("invalid port: %d (must be 1-65535)", *port)
+	}
+
+	// Validate timeout
+	if *timeout < 1 || *timeout > 300 {
+		return "", fmt.Errorf("invalid timeout: %d (must be 1-300 seconds)", *timeout)
+	}
+
+	// Validate host
+	if strings.TrimSpace(*host) == "" {
+		return "", fmt.Errorf("host cannot be empty")
+	}
+
+	return mode, nil
+}
+
+func main() {
+	mode, err := validateArgs()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n\n", err)
+		printUsage()
+		os.Exit(1)
+	}
 
 	switch mode {
 	case "server":
-		fmt.Println("启动KCP Echo服务器...")
+		fmt.Printf("Starting KCP Echo Server on %s:%d...\n", *host, *port)
 		EchoServer()
 	case "client":
-		fmt.Println("启动KCP Echo客户端...")
+		fmt.Printf("Starting KCP Echo Client connecting to %s:%d...\n", *host, *port)
 		EchoClient()
-	default:
-		fmt.Printf("未知模式: %s\n", mode)
-		fmt.Println("支持的模式: server, client")
 	}
 }
 
-// EchoServer 简单的echo服务器示例
+// EchoServer implements a simple echo server example
 func EchoServer() {
 	fmt.Println("=== KCP Echo Server ===")
-	fmt.Println("启动KCP echo服务器...")
+	fmt.Println("Starting KCP echo server...")
 
-	// 创建服务器配置
+	// Create server configuration
 	cfg := kcp2k.NewKcpConfig(kcp2k.WithDualMode(false))
 
-	// 连接统计
+	// Connection statistics
 	connectedCount := 0
 	messageCount := 0
 
-	// 声明服务器变量
+	// Declare server variable
 	var server *kcp2k.KcpServer
 
-	// 创建服务器
+	// Create server with callbacks
 	server = kcp2k.NewKcpServer(
-		// 连接回调
+		// Connection callback
 		func(id int) {
 			connectedCount++
-			fmt.Printf("[%s] 客户端 %d 已连接 (总连接数: %d)\n", time.Now().Format("15:04:05"), id, connectedCount)
+			logMsg := fmt.Sprintf("[%s] Client %d connected (total connections: %d)",
+				time.Now().Format("15:04:05"), id, connectedCount)
+			if *verbose {
+				fmt.Println(logMsg)
+			} else {
+				fmt.Printf("Client %d connected\n", id)
+			}
 		},
-		// 消息回调 - 回显消息
+		// Message callback - echo messages
 		func(id int, data []byte, ch kcp2k.KcpChannel) {
 			messageCount++
-			channelStr := "可靠"
+			channelStr := "reliable"
 			if ch == kcp2k.KcpUnreliable {
-				channelStr = "不可靠"
+				channelStr = "unreliable"
 			}
-			fmt.Printf("[%s] 收到客户端 %d 消息: %s (通道: %s, 长度: %d)\n",
-				time.Now().Format("15:04:05"), id, string(data), channelStr, len(data))
 
-			// 回显消息给客户端
+			if *verbose {
+				fmt.Printf("[%s] Received from client %d: %s (channel: %s, length: %d)\n",
+					time.Now().Format("15:04:05"), id, string(data), channelStr, len(data))
+			} else {
+				fmt.Printf("Client %d: %s\n", id, string(data))
+			}
+
+			// Echo message back to client
 			response := fmt.Sprintf("Echo: %s", string(data))
 			server.Send(id, []byte(response), ch)
-			fmt.Printf("[%s] 已回显消息给客户端 %d\n", time.Now().Format("15:04:05"), id)
+
+			if *verbose {
+				fmt.Printf("[%s] Echoed message to client %d\n", time.Now().Format("15:04:05"), id)
+			}
 		},
-		// 断开连接回调
+		// Disconnection callback
 		func(id int) {
 			connectedCount--
-			fmt.Printf("[%s] 客户端 %d 已断开 (总连接数: %d)\n", time.Now().Format("15:04:05"), id, connectedCount)
+			logMsg := fmt.Sprintf("[%s] Client %d disconnected (total connections: %d)",
+				time.Now().Format("15:04:05"), id, connectedCount)
+			if *verbose {
+				fmt.Println(logMsg)
+			} else {
+				fmt.Printf("Client %d disconnected\n", id)
+			}
 		},
-		// 错误回调
+		// Error callback
 		func(id int, errorCode kcp2k.ErrorCode, msg string) {
-			fmt.Printf("[%s] 客户端 %d 错误: %v %s\n", time.Now().Format("15:04:05"), id, errorCode, msg)
+			fmt.Printf("[%s] Client %d error: %v %s\n", time.Now().Format("15:04:05"), id, errorCode, msg)
 		},
 		cfg,
 	)
 
-	// 启动服务器
-	port := uint16(8888)
-	if err := server.Start(port); err != nil {
-		log.Fatalf("服务器启动失败: %v", err)
+	// Start server
+	serverPort := uint16(*port)
+	if err := server.Start(serverPort); err != nil {
+		log.Fatalf("Failed to start server: %v", err)
 	}
 
-	fmt.Printf("[%s] 服务器已启动在端口 %d\n", time.Now().Format("15:04:05"), port)
+	fmt.Printf("[%s] Server started on port %d\n", time.Now().Format("15:04:05"), serverPort)
 
-	// 启动tick循环
+	// Start tick loop
 	go func() {
 		tickCount := 0
 		for {
@@ -106,84 +187,120 @@ func EchoServer() {
 			time.Sleep(10 * time.Millisecond)
 
 			tickCount++
-			if tickCount%100 == 0 { // 每1秒打印一次状态
-				fmt.Printf("[%s] 服务器运行中... 连接数: %d, 消息数: %d\n",
+			if *verbose && tickCount%100 == 0 { // Print status every 1 second
+				fmt.Printf("[%s] Server running... connections: %d, messages: %d\n",
 					time.Now().Format("15:04:05"), connectedCount, messageCount)
 			}
 		}
 	}()
 
-	// 等待中断信号 (macOS优化)
+	// Wait for interrupt signals (cross-platform)
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan,
 		syscall.SIGINT,  // Ctrl+C
-		syscall.SIGTERM, // kill命令
+		syscall.SIGTERM, // kill command
 		syscall.SIGQUIT, // Ctrl+\
-		syscall.SIGHUP,  // 终端关闭
+		syscall.SIGHUP,  // terminal closed
 	)
 
-	fmt.Println("服务器正在运行，按 Ctrl+C 停止...")
+	fmt.Println("Server is running, press Ctrl+C to stop...")
 	<-sigChan
 
-	fmt.Println("\n正在关闭服务器...")
+	fmt.Println("\nShutting down server...")
 	server.Stop()
-	fmt.Println("服务器已关闭")
+	fmt.Println("Server stopped")
 }
 
-// EchoClient 简单的echo客户端示例
+// generateTestMessage generates a test message based on configuration
+func generateTestMessage() string {
+	if *message != "" {
+		return *message
+	}
+
+	// Generate random test message
+	messages := []string{
+		"Hello KCP Test!",
+		"Random message test",
+		"Echo test message",
+		"KCP reliability check",
+		"Network connectivity test",
+		fmt.Sprintf("Test at %s", time.Now().Format("15:04:05")),
+		fmt.Sprintf("Random number: %d", rand.Intn(10000)),
+	}
+
+	return messages[rand.Intn(len(messages))]
+}
+
+// EchoClient implements a simple echo client example
 func EchoClient() {
 	fmt.Println("=== KCP Echo Client ===")
-	fmt.Println("启动KCP echo客户端...")
+	fmt.Println("Starting KCP echo client...")
 
-	// 创建客户端配置
+	// Initialize random seed
+	rand.Seed(time.Now().UnixNano())
+
+	// Create client configuration
 	cfg := kcp2k.NewKcpConfig(kcp2k.WithDualMode(false))
 
-	// 连接状态
+	// Connection state
 	connected := false
 	messageCount := 0
 	messageReceived := make(chan bool, 1)
 	disconnected := make(chan bool, 1)
 	errorOccurred := make(chan bool, 1)
 
-	// 创建客户端
+	// Create client with callbacks
 	client := kcp2k.NewKcpClient(
-		// 连接成功回调
+		// Connection success callback
 		func() {
 			connected = true
-			fmt.Printf("[%s] 已连接到服务器\n", time.Now().Format("15:04:05"))
+			if *verbose {
+				fmt.Printf("[%s] Connected to server\n", time.Now().Format("15:04:05"))
+			} else {
+				fmt.Println("Connected to server")
+			}
 		},
-		// 消息接收回调
+		// Message receive callback
 		func(data []byte, ch kcp2k.KcpChannel) {
 			messageCount++
-			channelStr := "可靠"
+			channelStr := "reliable"
 			if ch == kcp2k.KcpUnreliable {
-				channelStr = "不可靠"
+				channelStr = "unreliable"
 			}
-			fmt.Printf("[%s] 收到服务器消息: %s (通道: %s, 长度: %d)\n",
-				time.Now().Format("15:04:05"), string(data), channelStr, len(data))
 
-			// 发送信号表示已收到消息
+			if *verbose {
+				fmt.Printf("[%s] Received from server: %s (channel: %s, length: %d)\n",
+					time.Now().Format("15:04:05"), string(data), channelStr, len(data))
+			} else {
+				fmt.Printf("Server: %s\n", string(data))
+			}
+
+			// Send signal indicating message received
 			select {
 			case messageReceived <- true:
 			default:
 			}
 		},
-		// 断开连接回调
+		// Disconnection callback
 		func() {
 			connected = false
-			fmt.Printf("[%s] 与服务器断开连接\n", time.Now().Format("15:04:05"))
+			if *verbose {
+				fmt.Printf("[%s] Disconnected from server\n", time.Now().Format("15:04:05"))
+			} else {
+				fmt.Println("Disconnected from server")
+			}
 
-			// 发送信号表示断开连接完成
+			// Send signal indicating disconnection complete
 			select {
 			case disconnected <- true:
 			default:
 			}
 		},
-		// 错误回调
+		// Error callback
 		func(errorCode kcp2k.ErrorCode, msg string) {
-			fmt.Printf("[%s] 客户端错误: %v %s\n", time.Now().Format("15:04:05"), errorCode, msg)
+			fmt.Printf("[%s] Client error: %v %s\n", time.Now().Format("15:04:05"), errorCode, msg)
 
-			// 发送信号表示发生错误
+			// Send signal indicating error occurred
 			select {
 			case errorOccurred <- true:
 			default:
@@ -192,17 +309,17 @@ func EchoClient() {
 		cfg,
 	)
 
-	// 连接到服务器
-	serverAddr := "127.0.0.1"
-	serverPort := uint16(8888)
+	// Connect to server
+	serverAddr := *host
+	serverPort := uint16(*port)
 
-	fmt.Printf("[%s] 正在连接到服务器 %s:%d...\n", time.Now().Format("15:04:05"), serverAddr, serverPort)
+	fmt.Printf("[%s] Connecting to server %s:%d...\n", time.Now().Format("15:04:05"), serverAddr, serverPort)
 
 	if err := client.Connect(serverAddr, serverPort); err != nil {
-		log.Fatalf("连接服务器失败: %v", err)
+		log.Fatalf("Failed to connect to server: %v", err)
 	}
 
-	// 启动tick循环
+	// Start tick loop
 	go func() {
 		for {
 			client.Tick()
@@ -210,48 +327,49 @@ func EchoClient() {
 		}
 	}()
 
-	// 等待连接建立
+	// Wait for connection establishment
+	connectionTimeout := time.Duration(*timeout) * time.Second
 	time.Sleep(1 * time.Second)
 	if !connected {
-		fmt.Println("连接超时，请检查服务器是否运行")
+		fmt.Printf("Connection timeout after %v, please check if server is running\n", connectionTimeout)
 		return
 	}
 
-	fmt.Println("\n=== 自动测试模式 ===")
-	fmt.Println("连接成功，将自动发送测试消息并退出")
+	fmt.Println("\n=== Automatic Test Mode ===")
+	fmt.Println("Connection successful, will send test message and exit")
 
-	// 发送测试消息
-	testMessage := "Hello KCP Auto Test!"
-	fmt.Printf("[%s] 发送测试消息: %s\n", time.Now().Format("15:04:05"), testMessage)
+	// Send test message
+	testMessage := generateTestMessage()
+	fmt.Printf("[%s] Sending test message: %s\n", time.Now().Format("15:04:05"), testMessage)
 	client.Send([]byte(testMessage), kcp2k.KcpReliable)
 
-	// 等待接收回显消息或发生错误
-	fmt.Printf("[%s] 等待服务器回显...\n", time.Now().Format("15:04:05"))
+	// Wait for echo response or error with timeout
+	fmt.Printf("[%s] Waiting for server echo...\n", time.Now().Format("15:04:05"))
 
-	// 使用通道等待消息接收完成或错误，设置超时
+	// Use channel to wait for message reception or error with timeout
 	select {
 	case <-messageReceived:
-		fmt.Printf("[%s] 已收到服务器回显，测试成功\n", time.Now().Format("15:04:05"))
+		fmt.Printf("[%s] Received server echo, test successful\n", time.Now().Format("15:04:05"))
 	case <-errorOccurred:
-		fmt.Printf("[%s] 发生错误，准备退出\n", time.Now().Format("15:04:05"))
+		fmt.Printf("[%s] Error occurred, preparing to exit\n", time.Now().Format("15:04:05"))
 		return
-	case <-time.After(5 * time.Second):
-		fmt.Printf("[%s] 等待服务器回显超时\n", time.Now().Format("15:04:05"))
+	case <-time.After(time.Duration(*timeout) * time.Second):
+		fmt.Printf("[%s] Timeout waiting for server echo\n", time.Now().Format("15:04:05"))
 	}
 
-	// 断开连接并等待断开完成或错误
-	fmt.Printf("[%s] 测试完成，正在断开连接...\n", time.Now().Format("15:04:05"))
+	// Disconnect and wait for completion or error
+	fmt.Printf("[%s] Test complete, disconnecting...\n", time.Now().Format("15:04:05"))
 	client.Disconnect()
 
-	// 等待断开连接回调执行完成或发生错误
+	// Wait for disconnection callback completion or error
 	select {
 	case <-disconnected:
-		fmt.Printf("[%s] 断开连接完成\n", time.Now().Format("15:04:05"))
+		fmt.Printf("[%s] Disconnection complete\n", time.Now().Format("15:04:05"))
 	case <-errorOccurred:
-		fmt.Printf("[%s] 断开连接过程中发生错误\n", time.Now().Format("15:04:05"))
+		fmt.Printf("[%s] Error occurred during disconnection\n", time.Now().Format("15:04:05"))
 	case <-time.After(3 * time.Second):
-		fmt.Printf("[%s] 等待断开连接超时\n", time.Now().Format("15:04:05"))
+		fmt.Printf("[%s] Timeout waiting for disconnection\n", time.Now().Format("15:04:05"))
 	}
 
-	fmt.Printf("[%s] 客户端已退出\n", time.Now().Format("15:04:05"))
+	fmt.Printf("[%s] Client exited\n", time.Now().Format("15:04:05"))
 }
