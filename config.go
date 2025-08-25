@@ -24,7 +24,7 @@ type KcpConfig struct {
 // DefaultKcpConfig 返回与C#默认构造函数等价的默认配置
 func DefaultKcpConfig() KcpConfig {
 	return KcpConfig{
-		DualMode:          true,
+		DualMode:          false,
 		RecvBufferSize:    1024 * 1024 * 7,
 		SendBufferSize:    1024 * 1024 * 7,
 		Mtu:               kcp.IKCP_MTU_DEF,
