@@ -1,16 +1,16 @@
 # KCP2K-Go
 
-一个高性能的KCP协议Go语言实现，与C# KCP2K完全兼容。
+一个 https://github.com/MirrorNetworking/kcp2k Go语言实现，与 C# KCP2K 完全兼容。
 
 ## 项目简介
 
-KCP2K-Go是基于KCP协议的可靠UDP传输库的Go语言实现，专为游戏和实时应用设计。它提供了与Mirror Networking的KCP2K完全兼容的API，支持跨语言通信。
+KCP2K-Go 是 https://github.com/MirrorNetworking/kcp2k 的 Go 语言版本，它基于 github.com/xtaci/kcp-go 打造，实现了 KCP2K 完整的功能。专为游戏和实时应用设计。它提供了与Mirror Networking 的 KCP2K 完全兼容的 API，支持跨语言通信。
 
 ### 主要特性
 
-- 🚀 **高性能**: 优化的KCP实现，低延迟高吞吐量
-- 🔄 **跨语言兼容**: 与C# KCP2K完全兼容
-- 🛡️ **可靠传输**: 基于UDP的可靠数据传输
+- 🚀 **高性能**: 优化的 KCP 实现，低延迟高吞吐量
+- 🔄 **跨语言兼容**: 与 C# KCP2K 完全兼容
+- 🛡️ **可靠传输**: 基于 UDP 的可靠数据传输
 - 📊 **性能监控**: 内置性能统计和监控
 - 🧪 **全面测试**: 包含压力测试和跨语言兼容性测试
 - ⚙️ **可配置**: 丰富的配置选项适应不同场景
@@ -25,7 +25,7 @@ KCP2K-Go是基于KCP协议的可靠UDP传输库的Go语言实现，专为游戏�
 ### 安装
 
 ```bash
-go get github.com/your-username/kcp2k-go
+go get https://github.com/O-Keh-Hunter/kcp2k-go
 ```
 
 ### 基本使用
@@ -38,7 +38,7 @@ package main
 import (
     "fmt"
     "log"
-    kcp "github.com/your-username/kcp2k-go"
+    kcp "https://github.com/O-Keh-Hunter/kcp2k-go"
 )
 
 func main() {
@@ -76,7 +76,7 @@ import (
     "fmt"
     "log"
     "time"
-    kcp "github.com/your-username/kcp2k-go"
+    kcp "https://github.com/O-Keh-Hunter/kcp2k-go"
 )
 
 func main() {
@@ -156,18 +156,18 @@ go test ./...
 ```
 kcp2k-go/
 ├── README.md                    # 项目说明
-├── go.mod                       # Go模块定义
+├── go.mod                       # Go 模块定义
 ├── *.go                         # 核心实现文件
 ├── examples/                    # 示例代码
-│   └── echo/                    # Echo服务器示例
+│   └── echo/                    # Echo 服务器示例
 ├── tests/                       # 测试套件
-│   ├── csharp_server_go_client/ # C#服务端+Go客户端测试
-│   ├── go_server_csharp_client/ # Go服务端+C#客户端测试
+│   ├── csharp_server_go_client/ # C# 服务端 + Go 客户端测试
+│   ├── go_server_csharp_client/ # Go 服务端 + C# 客户端测试
 │   ├── stress_client/           # 压力测试客户端
 │   ├── stress_server/           # 压力测试服务端
 │   └── stress_test/             # 压力测试主控程序
 ├── third_party/                 # 第三方依赖
-│   └── kcp2k/                   # C# KCP2K实现
+│   └── kcp2k/                   # C# KCP2K 实现
 └── tools/                       # 工具脚本
     └── scripts/
         ├── testing/             # 测试脚本
@@ -183,8 +183,8 @@ kcp2k-go/
 
 ## 兼容性
 
-- ✅ 与C# KCP2K完全兼容
-- ✅ 支持所有KCP2K的消息类型和配置
+- ✅ 与C# KCP2K 完全兼容
+- ✅ 支持所有 KCP2K 的消息类型和配置
 - ✅ 跨平台支持 (Windows, macOS, Linux)
 
 ## 贡献
@@ -195,7 +195,7 @@ kcp2k-go/
 
 1. 克隆仓库
 ```bash
-git clone https://github.com/your-username/kcp2k-go.git
+git clone https://github.com/O-Keh-Hunter/kcp2k-go.git
 cd kcp2k-go
 ```
 

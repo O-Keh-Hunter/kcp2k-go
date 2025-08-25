@@ -147,7 +147,13 @@ func main() {
 	logger.Printf("Creating %d rooms...", config.RoomCount)
 	for i := 0; i < config.RoomCount; i++ {
 		roomID := lockstep.RoomID(fmt.Sprintf("stress_room_%d", i))
-		room, err := server.CreateRoom(roomID, roomConfig)
+
+		var playerIds []lockstep.PlayerID
+		for j := 0; j < config.PlayersPerRoom; j++ {
+			playerIds = append(playerIds, lockstep.PlayerID(i*10+j))
+		}
+
+		room, err := server.CreateRoom(roomConfig, playerIds)
 		if err != nil {
 			logger.Printf("Failed to create room %s: %v", roomID, err)
 			continue

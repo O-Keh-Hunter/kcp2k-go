@@ -212,7 +212,7 @@ func (sc *StressClient) run() {
 
 	// 加入房间
 	roomID := lockstep.RoomID(fmt.Sprintf("stress_room_%d", sc.id/10)) // 每10个客户端一个房间
-	err = sc.client.JoinRoom(roomID, lockstep.PlayerID(sc.id))
+	err = sc.client.SendLogin("test_token", lockstep.PlayerID(sc.id))
 	if err != nil {
 		atomic.AddInt64(&sc.metrics.ConnectionErrors, 1)
 		sc.logger.Printf("[Client %d] Failed to join room %s: %v", sc.id, roomID, err)

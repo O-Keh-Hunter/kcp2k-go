@@ -112,6 +112,7 @@ type LockStepConfig struct {
 	ServerPort  uint16          `json:"server_port"`  // 服务器端口
 	LogLevel    string          `json:"log_level"`    // 日志级别
 	MetricsPort uint16          `json:"metrics_port"` // 监控端口
+	GrpcPort    uint16          `json:"grpc_port"`    // gRPC端口
 }
 
 // DefaultLockStepConfig 默认帧同步配置
@@ -140,6 +141,14 @@ func (c *LockStepConfig) ValidateConfig() error {
 		return fmt.Errorf("server port and metrics port cannot be the same")
 	}
 
+	if c.ServerPort == c.GrpcPort {
+		return fmt.Errorf("server port and gRPC port cannot be the same")
+	}
+
+	if c.MetricsPort == c.GrpcPort {
+		return fmt.Errorf("metrics port and gRPC port cannot be the same")
+	}
+
 	if c.RoomConfig == nil {
 		return fmt.Errorf("room config cannot be nil")
 	}
@@ -148,11 +157,15 @@ func (c *LockStepConfig) ValidateConfig() error {
 		return fmt.Errorf("max players cannot be 0")
 	}
 
+	if c.RoomConfig.MinPlayers == 0 {
+		return fmt.Errorf("min players cannot be 0")
+	}
+
 	if c.RoomConfig.MinPlayers > c.RoomConfig.MaxPlayers {
 		return fmt.Errorf("min players cannot be greater than max players")
 	}
 
-	if c.RoomConfig.FrameRate == 0 {
+	if c.RoomConfig.FrameRate <= 0 {
 		return fmt.Errorf("frame rate cannot be 0")
 	}
 

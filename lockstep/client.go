@@ -36,7 +36,6 @@ type LockStepClient struct {
 
 	onLoginResponseCallback      func(errorCode ErrorCode, errorMessage string)
 	onLogoutResponseCallback     func(errorCode ErrorCode, errorMessage string)
-	onJoinRoomResponseCallback   func(errorCode ErrorCode, errorMessage string)
 	onReadyResponseCallback      func(errorCode ErrorCode, errorMessage string)
 	onBroadcastReceivedCallback  func(playerID PlayerID, data []byte)
 	onPlayerStateChangedCallback func(playerID PlayerID, status PlayerStatus, reason string)
@@ -69,7 +68,6 @@ type ClientCallbacks struct {
 
 	OnLoginResponse      func(errorCode ErrorCode, errorMessage string)
 	OnLogoutResponse     func(errorCode ErrorCode, errorMessage string)
-	OnJoinRoomResponse   func(errorCode ErrorCode, errorMessage string)
 	OnReadyResponse      func(errorCode ErrorCode, errorMessage string)
 	OnBroadcastReceived  func(playerID PlayerID, data []byte)
 	OnPlayerStateChanged func(playerID PlayerID, status PlayerStatus, reason string)
@@ -137,6 +135,17 @@ func (c *LockStepClient) Connect(serverAddress string, port uint16) error {
 	// 重新创建stopChan以支持重连
 	c.stopChan = make(chan struct{})
 
+	// 如果kcpClient为nil（重连情况），重新创建
+	if c.kcpClient == nil {
+		c.kcpClient = kcp2k.NewKcpClient(
+			c.onConnected,
+			c.onData,
+			c.onDisconnected,
+			c.onError,
+			c.config.KcpConfig,
+		)
+	}
+
 	// 连接到服务器
 	err := c.kcpClient.Connect(serverAddress, port)
 	if err != nil {
@@ -193,34 +202,6 @@ func (c *LockStepClient) Disconnect() {
 		kcpClient.Disconnect()
 	}
 	Log.Debug("Disconnected from server")
-}
-
-// JoinRoom 加入房间
-func (c *LockStepClient) JoinRoom(roomID RoomID, playerID PlayerID) error {
-	c.mutex.Lock()
-	defer c.mutex.Unlock()
-
-	if !c.connected {
-		return fmt.Errorf("client is not connected")
-	}
-
-	c.roomID = roomID
-
-	// 发送加入房间请求
-	joinReq := &JoinRoomRequest{
-		RoomId:   string(roomID),
-		PlayerId: playerID,
-	}
-
-	joinMsg := &LockStepMessage{
-		Type: LockStepMessage_JOIN_ROOM_REQ,
-		Body: &LockStepMessage_JoinRoomReq{
-			JoinRoomReq: joinReq,
-		},
-	}
-
-	c.sendMessage(joinMsg, kcp2k.KcpReliable)
-	return nil
 }
 
 // SendInput 发送玩家输入
@@ -490,10 +471,7 @@ func (c *LockStepClient) handleMessage(msg *LockStepMessage) {
 		if logoutResp := msg.GetLogoutResp(); logoutResp != nil {
 			c.handleLogoutResponse(logoutResp)
 		}
-	case LockStepMessage_JOIN_ROOM_RESP:
-		if joinRoomResp := msg.GetJoinRoomResp(); joinRoomResp != nil {
-			c.handleJoinRoomResponse(joinRoomResp)
-		}
+
 	case LockStepMessage_READY_RESP:
 		if readyResp := msg.GetReadyResp(); readyResp != nil {
 			c.handleReadyResponse(readyResp)
@@ -729,6 +707,11 @@ func (c *LockStepClient) handlePlayerState(payload []byte) {
 		}
 	}
 
+	// 调用OnPlayerStateChanged回调
+	if c.onPlayerStateChangedCallback != nil {
+		c.onPlayerStateChangedCallback(PlayerID(playerStateMsg.PlayerId), playerStateMsg.Status, playerStateMsg.Reason)
+	}
+
 	// 打印玩家状态变更信息（取消注释以便调试）
 	Log.Debug("Player %d state changed: status=%v, reason: %s",
 		playerStateMsg.PlayerId,
@@ -747,12 +730,6 @@ func (c *LockStepClient) handleLoginResponse(resp *LoginResponse) {
 func (c *LockStepClient) handleLogoutResponse(resp *LogoutResponse) {
 	if c.onLogoutResponseCallback != nil {
 		c.onLogoutResponseCallback(resp.Base.ErrorCode, resp.Base.ErrorMessage)
-	}
-}
-
-func (c *LockStepClient) handleJoinRoomResponse(resp *JoinRoomResponse) {
-	if c.onJoinRoomResponseCallback != nil {
-		c.onJoinRoomResponseCallback(resp.Base.ErrorCode, resp.Base.ErrorMessage)
 	}
 }
 

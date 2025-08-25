@@ -6,7 +6,7 @@ import (
 	"time"
 
 	kcp2k "github.com/O-Keh-Hunter/kcp2k-go"
-	"google.golang.org/protobuf/proto"
+	"github.com/google/uuid"
 )
 
 // RoomManager 房间管理器
@@ -35,7 +35,14 @@ func (rm *RoomManager) Start() {
 
 // Stop 停止房间管理器
 func (rm *RoomManager) Stop() {
-	close(rm.stopChan)
+	// 安全关闭 stopChan
+	select {
+	case <-rm.stopChan:
+		// 通道已关闭
+		return
+	default:
+		close(rm.stopChan)
+	}
 
 	// 停止所有房间
 	rm.mutex.Lock()
@@ -46,14 +53,20 @@ func (rm *RoomManager) Stop() {
 	}
 }
 
+// generateRoomID 生成UUID v7作为房间ID
+func (rm *RoomManager) generateRoomID() RoomID {
+	// 使用 Google UUID v7 版本，基于时间戳和随机数
+	uuidV7 := uuid.Must(uuid.NewV7())
+	return RoomID(uuidV7.String())
+}
+
 // CreateRoom 创建房间
-func (rm *RoomManager) CreateRoom(roomID RoomID, config *RoomConfig, server *LockStepServer) (*Room, error) {
+func (rm *RoomManager) CreateRoom(config *RoomConfig, playerIDs []PlayerID, server *LockStepServer) (*Room, error) {
 	rm.mutex.Lock()
 	defer rm.mutex.Unlock()
 
-	if _, exists := rm.rooms[roomID]; exists {
-		return nil, fmt.Errorf("room %s already exists", roomID)
-	}
+	// 内部生成房间ID
+	roomID := rm.generateRoomID()
 
 	// 分配端口
 	port := rm.portManager.AllocatePort()
@@ -82,6 +95,22 @@ func (rm *RoomManager) CreateRoom(roomID RoomID, config *RoomConfig, server *Loc
 		// 初始化统计信息
 		FrameStats:   &FrameStats{},
 		NetworkStats: &NetworkStats{},
+	}
+
+	// 预先添加指定的玩家到房间
+	for _, playerID := range playerIDs {
+		// 创建新玩家
+		player := &LockStepPlayer{
+			Player: &Player{
+				PlayerId: playerID,
+				Status:   PlayerStatus_PLAYER_STATUS_OFFLINE,
+			},
+			ConnectionID: -1, // 使用 -1 表示尚未连接
+			InputBuffer:  make(map[FrameID][]*InputMessage),
+			Mutex:        sync.RWMutex{},
+		}
+		room.Players[playerID] = player
+		Log.Debug("Pre-added player %d to room %s", playerID, roomID)
 	}
 
 	// 创建房间专用的KCP服务器
@@ -141,111 +170,6 @@ func (rm *RoomManager) GetAllRooms() map[RoomID]*Room {
 	return rm.GetRooms()
 }
 
-// JoinRoom 玩家加入房间
-func (rm *RoomManager) JoinRoom(roomID RoomID, playerID PlayerID, connectionID int, server *LockStepServer) ErrorCode {
-	room, exists := rm.GetRoom(roomID)
-	if !exists {
-		return ErrorCode_ERROR_CODE_ROOM_NOT_FOUND
-	}
-
-	room.Mutex.Lock()
-	defer room.Mutex.Unlock()
-
-	// 检查玩家是否已存在（重连情况）
-	if existingPlayer, exists := room.Players[playerID]; exists {
-		return rm.handlePlayerReconnection(room, playerID, connectionID, existingPlayer, server)
-	}
-
-	// 检查房间是否已满
-	if len(room.Players) >= int(room.Config.MaxPlayers) {
-		Log.Error("")
-		return ErrorCode_ERROR_CODE_ROOM_FULL
-	}
-
-	// 创建新玩家并加入房间
-	return rm.addNewPlayerToRoom(room, playerID, connectionID, server)
-}
-
-// handlePlayerReconnection 处理玩家重连
-func (rm *RoomManager) handlePlayerReconnection(room *Room, playerID PlayerID, connectionID int, existingPlayer *LockStepPlayer, server *LockStepServer) ErrorCode {
-	// 更新连接信息
-	existingPlayer.Mutex.Lock()
-	existingPlayer.ConnectionID = connectionID
-	existingPlayer.Status = PlayerStatus_PLAYER_STATUS_ONLINE
-	existingPlayer.Mutex.Unlock()
-
-	// 广播玩家重新上线状态
-	server.broadcastPlayerState(room, playerID, existingPlayer.Status, "Player reconnected")
-
-	// 如果游戏正在运行，发送游戏开始消息
-	if room.State.Status == RoomStatus_ROOM_STATUS_RUNNING {
-		rm.sendGameStartMessage(room, connectionID, "reconnected", playerID)
-	}
-
-	Log.Debug("Player %d reconnected to room %s", playerID, room.ID)
-	return ErrorCode_ERROR_CODE_SUCC
-}
-
-// addNewPlayerToRoom 添加新玩家到房间
-func (rm *RoomManager) addNewPlayerToRoom(room *Room, playerID PlayerID, connectionID int, server *LockStepServer) ErrorCode {
-	// 创建新玩家
-	player := rm.createNewPlayer(playerID, connectionID, room)
-
-	// 添加到房间
-	room.Players[playerID] = player
-
-	// 广播玩家状态
-	server.broadcastPlayerState(room, playerID, player.Status, "Player joined room")
-
-	// 如果游戏正在运行，发送游戏开始消息
-	if room.State.Status == RoomStatus_ROOM_STATUS_RUNNING {
-		rm.sendGameStartMessage(room, connectionID, "new", playerID)
-	}
-
-	// 更新房间状态
-	rm.updateRoomStatusLocked(room, server)
-
-	Log.Debug("Player %d joined room %s (players: %d/%d)", playerID, room.ID, len(room.Players), room.Config.MaxPlayers)
-	return ErrorCode_ERROR_CODE_SUCC
-}
-
-// createNewPlayer 创建新玩家
-func (rm *RoomManager) createNewPlayer(playerID PlayerID, connectionID int, room *Room) *LockStepPlayer {
-	player := &LockStepPlayer{
-		Player: &Player{
-			PlayerId: playerID,
-			Status:   PlayerStatus_PLAYER_STATUS_ONLINE,
-		},
-		ConnectionID: connectionID,
-		InputBuffer:  make(map[FrameID][]*InputMessage),
-		Mutex:        sync.RWMutex{},
-	}
-
-	return player
-}
-
-// sendGameStartMessage 发送游戏开始消息
-func (rm *RoomManager) sendGameStartMessage(room *Room, connectionID int, playerType string, playerID PlayerID) {
-	gameStartMsg := &GameStartMessage{
-		CurrentFrameId:     int32(room.CurrentFrameID),
-		GameAlreadyRunning: true,
-	}
-
-	startMsg := &LockStepMessage{
-		Type: LockStepMessage_GAME_START,
-		Body: &LockStepMessage_GameStart{
-			GameStart: gameStartMsg,
-		},
-	}
-	msgData, err := proto.Marshal(startMsg)
-	if err != nil {
-		return
-	}
-
-	room.KcpServer.Send(connectionID, msgData, kcp2k.KcpReliable)
-	Log.Debug("Sent game start message to %s player %d in room %s (current frame: %d)", playerType, playerID, room.ID, room.CurrentFrameID)
-}
-
 // startRoom 启动房间
 func (rm *RoomManager) startRoom(room *Room, server *LockStepServer) {
 	room.Mutex.Lock()
@@ -296,6 +220,10 @@ func (rm *RoomManager) stopRoom(room *Room) {
 
 // frameLoop 帧循环
 func (rm *RoomManager) frameLoop(room *Room, server *LockStepServer) {
+	if room == nil || room.Config == nil {
+		return
+	}
+
 	frameInterval := time.Duration(1000/room.Config.FrameRate) * time.Millisecond
 	room.Ticker = time.NewTicker(frameInterval)
 	defer room.Ticker.Stop()
@@ -303,7 +231,9 @@ func (rm *RoomManager) frameLoop(room *Room, server *LockStepServer) {
 	for {
 		select {
 		case <-room.Ticker.C:
-			server.processFrame(room)
+			if server != nil {
+				server.processFrame(room)
+			}
 		case <-room.StopChan:
 			return
 		}
@@ -369,7 +299,13 @@ func (rm *RoomManager) UpdateRoomStatus(room *Room, server *LockStepServer) {
 
 // updateRoomStatusLocked 内部方法，假设已经持有锁
 func (rm *RoomManager) updateRoomStatusLocked(room *Room, server *LockStepServer) {
-	playerCount := len(room.Players)
+	playerCount := 0
+	for _, player := range room.Players {
+		if player.Status == PlayerStatus_PLAYER_STATUS_ONLINE || player.Status == PlayerStatus_PLAYER_STATUS_READY {
+			playerCount++
+		}
+	}
+
 	currentStatus := room.State.Status
 
 	// 更新当前玩家数量
@@ -378,11 +314,17 @@ func (rm *RoomManager) updateRoomStatusLocked(room *Room, server *LockStepServer
 	// 单向状态转换逻辑: idle -> waiting -> running -> ended
 	switch currentStatus {
 	case RoomStatus_ROOM_STATUS_IDLE:
-		// 有玩家加入时，从idle转换到waiting
-		if playerCount > 0 {
+		// 有在线玩家时，从idle转换到waiting
+		onlineCount := 0
+		for _, player := range room.Players {
+			if player.Status == PlayerStatus_PLAYER_STATUS_ONLINE || player.Status == PlayerStatus_PLAYER_STATUS_READY {
+				onlineCount++
+			}
+		}
+		if onlineCount > 0 {
 			room.State.Status = RoomStatus_ROOM_STATUS_WAITING
-			Log.Debug("Room %s: Status changed to WAITING (players joined: %d)", room.ID, playerCount)
-			server.broadcastRoomState(room, "Players joined, waiting for more")
+			Log.Debug("Room %s: Status changed to WAITING (online players: %d)", room.ID, onlineCount)
+			server.broadcastRoomState(room, "Players online, waiting for more")
 		}
 
 	case RoomStatus_ROOM_STATUS_WAITING:

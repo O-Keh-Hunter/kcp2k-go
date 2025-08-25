@@ -28,6 +28,9 @@ type LockStepServer struct {
 	// 性能监控字段
 	startTime     time.Time
 	metricsServer *http.Server
+
+	// gRPC 房间服务
+	grpcServer *GrpcServer
 }
 
 // PortManager 端口管理器
@@ -108,6 +111,11 @@ func (s *LockStepServer) Start() error {
 		s.StartMetricsServer()
 	}
 
+	// 启动 gRPC 服务器（如果配置了GrpcPort）
+	if s.config.GrpcPort > 0 {
+		s.StartGrpcServer()
+	}
+
 	return nil
 }
 
@@ -126,6 +134,12 @@ func (s *LockStepServer) Stop() {
 	// 停止指标服务器
 	s.StopMetricsServer()
 
+	// 停止 gRPC 服务器
+	if s.grpcServer != nil {
+		s.grpcServer.Stop()
+		s.grpcServer = nil
+	}
+
 	// 停止房间管理器
 	s.rooms.Stop()
 
@@ -136,11 +150,27 @@ func (s *LockStepServer) Stop() {
 func (s *LockStepServer) GracefulShutdown(ctx context.Context) error {
 	Log.Info("Starting graceful shutdown...")
 
+	// 检查服务器是否已经停止
+	s.mutex.RLock()
+	if !s.running {
+		s.mutex.RUnlock()
+		return nil
+	}
+	s.mutex.RUnlock()
+
 	// 创建一个通道来接收关闭完成信号
 	done := make(chan struct{})
+	var once sync.Once
 
 	go func() {
-		defer close(done)
+		defer once.Do(func() {
+			select {
+			case <-done:
+				// 通道已关闭
+			default:
+				close(done)
+			}
+		})
 
 		// 停止接受新连接
 		s.mutex.Lock()
@@ -151,7 +181,9 @@ func (s *LockStepServer) GracefulShutdown(ctx context.Context) error {
 		time.Sleep(2 * time.Second)
 
 		// 停止房间管理器
-		s.rooms.Stop()
+		if s.rooms != nil {
+			s.rooms.Stop()
+		}
 
 		Log.Info("All rooms stopped")
 	}()
@@ -173,21 +205,26 @@ func (s *LockStepServer) WaitForShutdown() {
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
 
-	sig := <-sigChan
-	Log.Info("Received signal: %v", sig)
+	// 等待系统信号或服务器停止信号
+	select {
+	case sig := <-sigChan:
+		Log.Info("Received signal: %v", sig)
+		// 创建带超时的上下文
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
 
-	// 创建带超时的上下文
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-
-	if err := s.GracefulShutdown(ctx); err != nil {
-		Log.Error("Graceful shutdown failed: %v", err)
+		if err := s.GracefulShutdown(ctx); err != nil {
+			Log.Error("Graceful shutdown failed: %v", err)
+		}
+	case <-s.stopChan:
+		// 服务器已经停止，直接返回
+		Log.Info("Server stopped, WaitForShutdown returning")
 	}
 }
 
 // CreateRoom 创建房间
-func (s *LockStepServer) CreateRoom(roomID RoomID, config *RoomConfig) (*Room, error) {
-	return s.rooms.CreateRoom(roomID, config, s)
+func (s *LockStepServer) CreateRoom(config *RoomConfig, playerIDs []PlayerID) (*Room, error) {
+	return s.rooms.CreateRoom(config, playerIDs, s)
 }
 
 // GetRoom 获取房间
@@ -198,11 +235,6 @@ func (s *LockStepServer) GetRoom(roomID RoomID) (*Room, bool) {
 // GetRooms 获取所有房间
 func (s *LockStepServer) GetRooms() map[RoomID]*Room {
 	return s.rooms.GetRooms()
-}
-
-// JoinRoom 玩家加入房间
-func (s *LockStepServer) JoinRoom(roomID RoomID, playerID PlayerID, connectionID int) ErrorCode {
-	return s.rooms.JoinRoom(roomID, playerID, connectionID, s)
 }
 
 // processFrame 处理一帧
@@ -460,7 +492,7 @@ func (s *LockStepServer) onRoomDisconnected(room *Room, connectionID int) {
 		disconnectedPlayer.Status = PlayerStatus_PLAYER_STATUS_OFFLINE
 		disconnectedPlayer.Mutex.Unlock()
 
-		Log.Error("Room %s: Player %d disconnected", room.ID, disconnectedPlayer.PlayerId)
+		Log.Debug("Room %s: Player %d disconnected", room.ID, disconnectedPlayer.PlayerId)
 
 		// 广播玩家离线状态给房间内的其他玩家
 		s.broadcastPlayerState(room, disconnectedPlayer.PlayerId, disconnectedPlayer.Status, "Player disconnected")
@@ -489,7 +521,51 @@ func (s *LockStepServer) handleLoginRequest(room *Room, connectionID int, req *L
 		return
 	}
 
-	// TODO: 实现token验证逻辑
+	// TODO: 实现token验证逻辑，验证token中的player_id和room_id
+
+	// 查找房间中的玩家
+	room.Mutex.Lock()
+	defer room.Mutex.Unlock()
+
+	playerID := PlayerID(req.PlayerId)
+	player, exists := room.Players[playerID]
+	if !exists {
+		// 玩家不在房间的预设列表中
+		s.sendLoginResponse(room, connectionID, ErrorCode_ERROR_CODE_PLAYER_NOT_FOUND, 0)
+		return
+	}
+
+	// 检查是否为重连
+	isReconnect := player.ConnectionID != -1
+	if isReconnect {
+		// 处理重连逻辑
+		oldConnectionID := player.ConnectionID
+		Log.Debug("Player %d reconnecting: old connection %d, new connection %d", playerID, oldConnectionID, connectionID)
+		// TODO: 清理旧连接资源
+	}
+
+	// 更新玩家连接信息
+	player.Mutex.Lock()
+	player.ConnectionID = connectionID
+	player.Status = PlayerStatus_PLAYER_STATUS_ONLINE
+	player.Mutex.Unlock()
+
+	// 广播玩家状态变更
+	if isReconnect {
+		s.broadcastPlayerState(room, playerID, player.Status, "Player reconnected")
+		Log.Debug("Player %d reconnected to room %s with connection %d", playerID, room.ID, connectionID)
+	} else {
+		s.broadcastPlayerState(room, playerID, player.Status, "Player logged in")
+		Log.Debug("Player %d logged in to room %s with connection %d", playerID, room.ID, connectionID)
+	}
+
+	// 如果游戏正在运行，发送游戏开始消息
+	if room.State.Status == RoomStatus_ROOM_STATUS_RUNNING {
+		s.sendGameStartMessage(room, connectionID, playerID, isReconnect)
+	}
+
+	// 更新房间状态
+	s.rooms.updateRoomStatusLocked(room, s)
 
 	// 发送登录响应
 	s.sendLoginResponse(room, connectionID, ErrorCode_ERROR_CODE_SUCC, req.PlayerId)
@@ -521,11 +597,11 @@ func (s *LockStepServer) handleLogoutRequest(room *Room, connectionID int, _ *Lo
 	// 广播玩家离线状态
 	s.broadcastPlayerState(room, player.PlayerId, PlayerStatus_PLAYER_STATUS_OFFLINE, "Player logged out")
 
-	// 发送登出响应
-	s.sendLogoutResponse(room, connectionID, ErrorCode_ERROR_CODE_SUCC)
-
 	// 更新房间状态
 	s.rooms.UpdateRoomStatus(room, s)
+
+	// 发送登出响应
+	s.sendLogoutResponse(room, connectionID, ErrorCode_ERROR_CODE_SUCC)
 }
 
 // sendLoginResponse 发送登录响应
@@ -573,6 +649,33 @@ func (s *LockStepServer) sendLogoutResponse(room *Room, connectionID int, errorC
 	}
 
 	room.KcpServer.Send(connectionID, data, kcp2k.KcpReliable)
+}
+
+// sendGameStartMessage 发送游戏开始消息
+func (s *LockStepServer) sendGameStartMessage(room *Room, connectionID int, playerID PlayerID, isReconnect bool) {
+	gameStartMsg := &GameStartMessage{
+		CurrentFrameId:     int32(room.CurrentFrameID),
+		GameAlreadyRunning: true,
+	}
+
+	startMsg := &LockStepMessage{
+		Type: LockStepMessage_GAME_START,
+		Body: &LockStepMessage_GameStart{
+			GameStart: gameStartMsg,
+		},
+	}
+	msgData, err := proto.Marshal(startMsg)
+	if err != nil {
+		return
+	}
+
+	room.KcpServer.Send(connectionID, msgData, kcp2k.KcpReliable)
+
+	playerType := "new"
+	if isReconnect {
+		playerType = "reconnected"
+	}
+	Log.Debug("Sent game start message to %s player %d in room %s (current frame: %d)", playerType, playerID, room.ID, room.CurrentFrameID)
 }
 
 // handleBroadcastRequest 处理广播请求
@@ -669,10 +772,6 @@ func (s *LockStepServer) handleRoomMessage(room *Room, connectionID int, msg *Lo
 		if logoutReq := msg.GetLogoutReq(); logoutReq != nil {
 			s.handleLogoutRequest(room, connectionID, logoutReq)
 		}
-	case LockStepMessage_JOIN_ROOM_REQ:
-		if joinReq := msg.GetJoinRoomReq(); joinReq != nil {
-			s.handleJoinRoomRequest(room, connectionID, joinReq)
-		}
 	case LockStepMessage_READY_REQ:
 		if ready := msg.GetReadyReq(); ready != nil {
 			s.handlePlayerReadyRequest(room, connectionID, ready)
@@ -764,9 +863,6 @@ func (s *LockStepServer) handlePlayerReadyRequest(room *Room, connectionID int, 
 	}
 	player.Mutex.Unlock()
 
-	// 发送准备响应
-	s.sendReadyResponse(room, connectionID, ErrorCode_ERROR_CODE_SUCC)
-
 	// 广播玩家状态变更
 	reason := "Player ready"
 	if !readyMsg.Ready {
@@ -778,6 +874,9 @@ func (s *LockStepServer) handlePlayerReadyRequest(room *Room, connectionID int, 
 
 	// 通过更新房间状态来触发游戏开始检查
 	s.rooms.UpdateRoomStatus(room, s)
+
+	// 发送准备响应
+	s.sendReadyResponse(room, connectionID, ErrorCode_ERROR_CODE_SUCC)
 }
 
 // sendReadyResponse 发送准备响应
@@ -880,47 +979,6 @@ func (s *LockStepServer) sendFrameResponse(room *Room, connectionID int, frames 
 	}
 
 	room.KcpServer.Send(connectionID, msgData, kcp2k.KcpReliable)
-}
-
-// handleJoinRoomRequest 处理加入房间请求
-func (s *LockStepServer) handleJoinRoomRequest(room *Room, connectionID int, joinReq *JoinRoomRequest) {
-	// 尝试加入房间
-	if errorCode := s.JoinRoom(RoomID(joinReq.RoomId), joinReq.PlayerId, connectionID); errorCode != ErrorCode_ERROR_CODE_SUCC {
-		s.sendJoinRoomResponse(connectionID, room, errorCode)
-		Log.Error("Room %s: Failed to join room for player %d: %v", room.ID, joinReq.PlayerId, errorCode)
-		return
-	}
-
-	// 发送加入房间成功响应
-	s.sendJoinRoomResponse(connectionID, room, ErrorCode_ERROR_CODE_SUCC)
-	Log.Debug("Player %d joined room %s", joinReq.PlayerId, room.ID)
-}
-
-// sendJoinRoomResponse 发送加入房间响应
-func (s *LockStepServer) sendJoinRoomResponse(connectionID int, room *Room, errorCode ErrorCode) {
-	resp := &JoinRoomResponse{
-		Base: &BaseResponse{
-			ErrorCode:    errorCode,
-			ErrorMessage: errorCode.String(),
-		},
-	}
-
-	msg := &LockStepMessage{
-		Type: LockStepMessage_JOIN_ROOM_RESP,
-		Body: &LockStepMessage_JoinRoomResp{
-			JoinRoomResp: resp,
-		},
-	}
-
-	data, err := proto.Marshal(msg)
-	if err != nil {
-		Log.Error("Failed to marshal join room response: %v", err)
-		return
-	}
-
-	if room != nil {
-		room.KcpServer.Send(connectionID, data, kcp2k.KcpReliable)
-	}
 }
 
 // GetRoomInfo 获取房间信息
@@ -1201,11 +1259,30 @@ func (s *LockStepServer) HealthCheck() map[string]interface{} {
 	return map[string]interface{}{
 		"status":           status,
 		"running":          isRunning,
-		"uptime_seconds":   uptime.Seconds(),
-		"rooms":            roomCount,
-		"players":          playerCount,
+		"uptime":           uptime.Seconds(),
+		"total_rooms":      roomCount,
+		"total_players":    playerCount,
 		"packet_loss_rate": packetLossRate,
-		"memory_usage_mb":  float64(memStats.Alloc) / 1024 / 1024,
+		"memory_usage":     float64(memStats.Alloc) / 1024 / 1024,
+		"goroutines":       runtime.NumGoroutine(),
 		"timestamp":        time.Now().Unix(),
 	}
+}
+
+// StartGrpcServer 启动 gRPC 服务器
+func (s *LockStepServer) StartGrpcServer() error {
+	if s.grpcServer != nil {
+		return fmt.Errorf("gRPC server already started")
+	}
+
+	s.grpcServer = NewGrpcServer(s, int(s.config.GrpcPort))
+
+	// 在后台启动 gRPC 服务器
+	go func() {
+		if err := s.grpcServer.Start(); err != nil {
+			Log.Error("[LockStep] Server: failed to start gRPC server: %v", err)
+		}
+	}()
+
+	return nil
 }

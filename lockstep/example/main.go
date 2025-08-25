@@ -32,6 +32,8 @@ func main() {
 	}
 }
 
+var roomID lockstep.RoomID
+
 func runServer() {
 	port := uint16(8888)
 	if len(os.Args) > 2 {
@@ -65,14 +67,17 @@ func runServer() {
 		roomConfig.MinPlayers, roomConfig.MaxPlayers, roomConfig.FrameRate)
 
 	// 创建房间
-	roomID := lockstep.RoomID("room1")
-	room, err := server.CreateRoom(roomID, roomConfig)
+	// 预设玩家ID列表
+	playerIDs := []lockstep.PlayerID{1, 2, 3, 4} // 支持最多4个玩家
+	room, err := server.CreateRoom(roomConfig, playerIDs)
 	if err != nil {
 		log.Fatalf("Failed to create room: %v", err)
 	}
 
+	roomID = room.ID
+
 	log.Printf("Created room %s on port %d (MinPlayers: %d, MaxPlayers: %d)",
-		roomID, room.Port, room.Config.MinPlayers, room.Config.MaxPlayers)
+		room.ID, room.Port, room.Config.MinPlayers, room.Config.MaxPlayers)
 
 	// 等待中断信号
 	sigChan := make(chan os.Signal, 1)
@@ -136,57 +141,45 @@ func runClient() {
 		OnConnected: func() {
 			log.Printf("[Player %d] Successfully connected to server", playerID)
 
-			// 发送登录请求
-			err := client.SendLogin("test_token", playerID)
+			// 发送登录请求，包含房间ID
+			err := client.SendLogin("test_token", int32(playerID))
 			if err != nil {
 				log.Printf("[Player %d] Failed to send login request: %v", playerID, err)
 				return
 			}
-			log.Printf("[Player %d] Sent login request", playerID)
+			log.Printf("[Player %d] Sent login request for room %s", playerID, roomID)
 		},
 		OnLoginResponse: func(errorCode lockstep.ErrorCode, errorMessage string) {
 			if errorCode != lockstep.ErrorCode_ERROR_CODE_SUCC {
 				log.Printf("[Player %d] Login failed: %s (code: %d)", playerID, errorMessage, errorCode)
 				return
 			}
-			log.Printf("[Player %d] Login successful", playerID)
+			log.Printf("[Player %d] Login successful, already in room", playerID)
 
-			// 登录成功后加入房间
-			roomID := lockstep.RoomID("room1")
-			err := client.JoinRoom(roomID, playerID)
+			// 登录成功后直接发送准备信号
+			err := client.SendReady(true)
 			if err != nil {
-				log.Printf("[Player %d] Failed to join room: %v", playerID, err)
+				log.Printf("[Player %d] Failed to send ready signal: %v", playerID, err)
 			} else {
-				log.Printf("[Player %d] Sent join room request: %s", playerID, roomID)
+				log.Printf("[Player %d] Sent ready signal", playerID)
 			}
+
+			// 发送广播消息
+			go func() {
+				time.Sleep(2 * time.Second) // 等待2秒后发送广播
+				err := client.SendBroadcast([]byte("Hello everyone!"))
+				if err != nil {
+					log.Printf("[Player %d] Failed to send broadcast: %v", playerID, err)
+				} else {
+					log.Printf("[Player %d] Sent broadcast message", playerID)
+				}
+			}()
 		},
 		OnDisconnected: func() {
 			log.Printf("[Player %d] Disconnected from server", playerID)
 		},
 		OnPlayerJoined: func(pid lockstep.PlayerID) {
-			if pid == playerID {
-				log.Printf("[Player %d] You joined the room", playerID)
-				// 发送准备信号
-				err := client.SendReady(true)
-				if err != nil {
-					log.Printf("[Player %d] Failed to send ready signal: %v", playerID, err)
-				} else {
-					log.Printf("[Player %d] Sent ready signal", playerID)
-				}
-
-				// 发送广播消息
-				go func() {
-					time.Sleep(2 * time.Second) // 等待2秒后发送广播
-					err := client.SendBroadcast([]byte("Hello everyone!"))
-					if err != nil {
-						log.Printf("[Player %d] Failed to send broadcast: %v", playerID, err)
-					} else {
-						log.Printf("[Player %d] Sent broadcast message", playerID)
-					}
-				}()
-			} else {
-				log.Printf("[Player %d] Player %d joined", playerID, pid)
-			}
+			log.Printf("[Player %d] Player %d joined the room", playerID, pid)
 		},
 		OnPlayerLeft: func(pid lockstep.PlayerID) {
 			log.Printf("[Player %d] Player %d left", playerID, pid)

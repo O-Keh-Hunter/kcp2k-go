@@ -1,6 +1,7 @@
 package lockstep
 
 import (
+	"context"
 	"testing"
 	"time"
 
@@ -13,9 +14,9 @@ func TestGetServerStats_EmptyServer(t *testing.T) {
 	config := &LockStepConfig{
 		KcpConfig:   kcp2k.DefaultKcpConfig(),
 		RoomConfig:  DefaultRoomConfig(),
-		ServerPort:  8888,
+		ServerPort:  8701,
 		LogLevel:    "info",
-		MetricsPort: 9999,
+		MetricsPort: 9701,
 	}
 
 	// 创建服务器
@@ -90,9 +91,9 @@ func TestGetServerStats_WithRooms(t *testing.T) {
 	config := &LockStepConfig{
 		KcpConfig:   kcp2k.DefaultKcpConfig(),
 		RoomConfig:  DefaultRoomConfig(),
-		ServerPort:  8890,
+		ServerPort:  8702,
 		LogLevel:    "info",
-		MetricsPort: 9990,
+		MetricsPort: 9702,
 	}
 
 	// 创建服务器
@@ -109,12 +110,12 @@ func TestGetServerStats_WithRooms(t *testing.T) {
 	}
 
 	// 创建多个房间
-	room1, err := server.CreateRoom("room1", roomConfig)
+	room1, err := server.CreateRoom(roomConfig, []PlayerID{})
 	if err != nil {
 		t.Fatalf("Failed to create room1: %v", err)
 	}
 
-	room2, err := server.CreateRoom("room2", roomConfig)
+	room2, err := server.CreateRoom(roomConfig, []PlayerID{})
 	if err != nil {
 		t.Fatalf("Failed to create room2: %v", err)
 	}
@@ -170,9 +171,9 @@ func TestGetServerStats_WithFrameStats(t *testing.T) {
 	config := &LockStepConfig{
 		KcpConfig:   kcp2k.DefaultKcpConfig(),
 		RoomConfig:  DefaultRoomConfig(),
-		ServerPort:  8896,
+		ServerPort:  8704,
 		LogLevel:    "info",
-		MetricsPort: 9996,
+		MetricsPort: 9704,
 	}
 
 	// 创建服务器
@@ -188,7 +189,7 @@ func TestGetServerStats_WithFrameStats(t *testing.T) {
 		RetryWindow: 50,
 	}
 
-	room, err := server.CreateRoom("test_room", roomConfig)
+	room, err := server.CreateRoom(roomConfig, []PlayerID{})
 	if err != nil {
 		t.Fatalf("Failed to create room: %v", err)
 	}
@@ -239,9 +240,9 @@ func TestGetServerStats_WithNetworkStats(t *testing.T) {
 	config := &LockStepConfig{
 		KcpConfig:   kcp2k.DefaultKcpConfig(),
 		RoomConfig:  DefaultRoomConfig(),
-		ServerPort:  8892,
+		ServerPort:  8705,
 		LogLevel:    "info",
-		MetricsPort: 9992,
+		MetricsPort: 9705,
 	}
 
 	// 创建服务器
@@ -257,7 +258,7 @@ func TestGetServerStats_WithNetworkStats(t *testing.T) {
 		RetryWindow: 50,
 	}
 
-	room, err := server.CreateRoom("test_room", roomConfig)
+	room, err := server.CreateRoom(roomConfig, []PlayerID{})
 	if err != nil {
 		t.Fatalf("Failed to create room: %v", err)
 	}
@@ -324,9 +325,9 @@ func TestGetServerStats_MultipleRoomsAggregation(t *testing.T) {
 	config := &LockStepConfig{
 		KcpConfig:   kcp2k.DefaultKcpConfig(),
 		RoomConfig:  DefaultRoomConfig(),
-		ServerPort:  8893,
+		ServerPort:  8706,
 		LogLevel:    "info",
-		MetricsPort: 9993,
+		MetricsPort: 9706,
 	}
 
 	// 创建服务器
@@ -343,12 +344,12 @@ func TestGetServerStats_MultipleRoomsAggregation(t *testing.T) {
 	}
 
 	// 创建两个房间
-	room1, err := server.CreateRoom("room1", roomConfig)
+	room1, err := server.CreateRoom(roomConfig, []PlayerID{})
 	if err != nil {
 		t.Fatalf("Failed to create room1: %v", err)
 	}
 
-	room2, err := server.CreateRoom("room2", roomConfig)
+	room2, err := server.CreateRoom(roomConfig, []PlayerID{})
 	if err != nil {
 		t.Fatalf("Failed to create room2: %v", err)
 	}
@@ -460,9 +461,9 @@ func TestGetServerStats_StoppedServer(t *testing.T) {
 	config := &LockStepConfig{
 		KcpConfig:   kcp2k.DefaultKcpConfig(),
 		RoomConfig:  DefaultRoomConfig(),
-		ServerPort:  8894,
+		ServerPort:  8708,
 		LogLevel:    "info",
-		MetricsPort: 9994,
+		MetricsPort: 9708,
 	}
 
 	// 创建服务器
@@ -492,9 +493,9 @@ func TestGetServerStats_NilStats(t *testing.T) {
 	config := &LockStepConfig{
 		KcpConfig:   kcp2k.DefaultKcpConfig(),
 		RoomConfig:  DefaultRoomConfig(),
-		ServerPort:  8895,
+		ServerPort:  8709,
 		LogLevel:    "info",
-		MetricsPort: 9995,
+		MetricsPort: 9709,
 	}
 
 	// 创建服务器
@@ -511,7 +512,7 @@ func TestGetServerStats_NilStats(t *testing.T) {
 	}
 
 	// 创建房间
-	room, err := server.CreateRoom("test_room", roomConfig)
+	room, err := server.CreateRoom(roomConfig, []PlayerID{})
 	if err != nil {
 		t.Fatalf("Failed to create room: %v", err)
 	}
@@ -549,5 +550,319 @@ func TestGetServerStats_NilStats(t *testing.T) {
 		if value != uint64(0) && value != float64(0) && value != int64(0) {
 			t.Errorf("Expected network_stats.%s to be 0, got %v", field, value)
 		}
+	}
+}
+
+// TestLockStepServer_Start 测试服务器启动
+func TestLockStepServer_Start(t *testing.T) {
+	config := &LockStepConfig{
+		KcpConfig:   kcp2k.DefaultKcpConfig(),
+		RoomConfig:  DefaultRoomConfig(),
+		ServerPort:  8710,
+		LogLevel:    "info",
+		MetricsPort: 9710,
+	}
+
+	server := NewLockStepServer(config)
+
+	// 测试启动
+	err := server.Start()
+	if err != nil {
+		t.Fatalf("Failed to start server: %v", err)
+	}
+
+	// 验证服务器状态
+	server.mutex.RLock()
+	running := server.running
+	server.mutex.RUnlock()
+
+	if !running {
+		t.Error("Expected server to be running after Start()")
+	}
+
+	// 测试重复启动
+	err = server.Start()
+	if err == nil {
+		t.Error("Expected error when starting already running server")
+	}
+
+	expected := "server is already running"
+	if err.Error() != expected {
+		t.Errorf("Expected error message '%s', got '%s'", expected, err.Error())
+	}
+
+	// 清理
+	server.Stop()
+}
+
+// TestLockStepServer_Stop 测试服务器停止
+func TestLockStepServer_Stop(t *testing.T) {
+	config := &LockStepConfig{
+		KcpConfig:   kcp2k.DefaultKcpConfig(),
+		RoomConfig:  DefaultRoomConfig(),
+		ServerPort:  8711,
+		LogLevel:    "info",
+		MetricsPort: 9711,
+	}
+
+	server := NewLockStepServer(config)
+
+	// 启动服务器
+	err := server.Start()
+	if err != nil {
+		t.Fatalf("Failed to start server: %v", err)
+	}
+
+	// 验证服务器正在运行
+	server.mutex.RLock()
+	running := server.running
+	server.mutex.RUnlock()
+
+	if !running {
+		t.Error("Expected server to be running before Stop()")
+	}
+
+	// 停止服务器
+	server.Stop()
+
+	// 验证服务器已停止
+	server.mutex.RLock()
+	running = server.running
+	server.mutex.RUnlock()
+
+	if running {
+		t.Error("Expected server to be stopped after Stop()")
+	}
+
+	// 测试重复停止（应该不会出错）
+	server.Stop()
+}
+
+// TestLockStepServer_GracefulShutdown 测试服务器优雅关闭
+func TestLockStepServer_GracefulShutdown(t *testing.T) {
+	config := &LockStepConfig{
+		KcpConfig:   kcp2k.DefaultKcpConfig(),
+		RoomConfig:  DefaultRoomConfig(),
+		ServerPort:  8712,
+		LogLevel:    "info",
+		MetricsPort: 9712,
+	}
+
+	server := NewLockStepServer(config)
+
+	// 启动服务器
+	err := server.Start()
+	if err != nil {
+		t.Fatalf("Failed to start server: %v", err)
+	}
+
+	// 创建上下文
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	// 优雅关闭
+	err = server.GracefulShutdown(ctx)
+	if err != nil {
+		t.Errorf("GracefulShutdown failed: %v", err)
+	}
+
+	// 验证服务器已停止
+	server.mutex.RLock()
+	running := server.running
+	server.mutex.RUnlock()
+
+	if running {
+		t.Error("Expected server to be stopped after GracefulShutdown()")
+	}
+}
+
+// TestLockStepServer_GracefulShutdown_Timeout 测试优雅关闭超时
+func TestLockStepServer_GracefulShutdown_Timeout(t *testing.T) {
+	config := &LockStepConfig{
+		KcpConfig:   kcp2k.DefaultKcpConfig(),
+		RoomConfig:  DefaultRoomConfig(),
+		ServerPort:  8713,
+		LogLevel:    "info",
+		MetricsPort: 9713,
+	}
+
+	server := NewLockStepServer(config)
+
+	// 启动服务器
+	err := server.Start()
+	if err != nil {
+		t.Fatalf("Failed to start server: %v", err)
+	}
+
+	// 创建一个很短的超时上下文
+	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Millisecond)
+	defer cancel()
+
+	// 等待上下文超时
+	time.Sleep(2 * time.Millisecond)
+
+	// 优雅关闭（应该立即返回因为上下文已超时）
+	err = server.GracefulShutdown(ctx)
+	if err == nil {
+		t.Error("Expected timeout error for GracefulShutdown with expired context")
+	}
+
+	// 清理
+	server.Stop()
+}
+
+// TestLockStepServer_WaitForShutdown 测试等待关闭信号
+func TestLockStepServer_WaitForShutdown(t *testing.T) {
+	config := &LockStepConfig{
+		KcpConfig:   kcp2k.DefaultKcpConfig(),
+		RoomConfig:  DefaultRoomConfig(),
+		ServerPort:  8714,
+		LogLevel:    "info",
+		MetricsPort: 9714,
+	}
+
+	server := NewLockStepServer(config)
+
+	// 启动服务器
+	err := server.Start()
+	if err != nil {
+		t.Fatalf("Failed to start server: %v", err)
+	}
+
+	// 在另一个 goroutine 中等待关闭信号
+	done := make(chan bool)
+	go func() {
+		server.WaitForShutdown()
+		done <- true
+	}()
+
+	// 等待一小段时间确保 WaitForShutdown 开始等待
+	time.Sleep(100 * time.Millisecond)
+
+	// 停止服务器
+	server.Stop()
+
+	// 验证 WaitForShutdown 返回
+	select {
+	case <-done:
+		// 成功
+	case <-time.After(2 * time.Second):
+		t.Error("WaitForShutdown did not return after Stop()")
+	}
+}
+
+// TestLockStepServer_HealthCheck 测试健康检查
+func TestLockStepServer_HealthCheck(t *testing.T) {
+	config := &LockStepConfig{
+		KcpConfig:   kcp2k.DefaultKcpConfig(),
+		RoomConfig:  DefaultRoomConfig(),
+		ServerPort:  8715,
+		LogLevel:    "info",
+		MetricsPort: 9715,
+	}
+
+	server := NewLockStepServer(config)
+
+	// 测试未启动的服务器
+	health := server.HealthCheck()
+	if health["status"] != "unhealthy" {
+		t.Errorf("Expected status to be 'unhealthy' for stopped server, got %v", health["status"])
+	}
+
+	// 启动服务器
+	err := server.Start()
+	if err != nil {
+		t.Fatalf("Failed to start server: %v", err)
+	}
+	defer server.Stop()
+
+	// 测试运行中的服务器
+	health = server.HealthCheck()
+	if health["status"] != "healthy" {
+		t.Errorf("Expected status to be 'healthy' for running server, got %v", health["status"])
+	}
+
+	// 验证其他健康检查字段
+	if _, exists := health["uptime"]; !exists {
+		t.Error("Expected uptime field in health check")
+	}
+
+	if _, exists := health["memory_usage"]; !exists {
+		t.Error("Expected memory_usage field in health check")
+	}
+
+	if _, exists := health["goroutines"]; !exists {
+		t.Error("Expected goroutines field in health check")
+	}
+
+	if _, exists := health["total_rooms"]; !exists {
+		t.Error("Expected total_rooms field in health check")
+	}
+
+	if _, exists := health["total_players"]; !exists {
+		t.Error("Expected total_players field in health check")
+	}
+}
+
+// TestLockStepServer_StartGrpcServer 测试启动gRPC服务器
+func TestLockStepServer_StartGrpcServer(t *testing.T) {
+	config := &LockStepConfig{
+		KcpConfig:   kcp2k.DefaultKcpConfig(),
+		RoomConfig:  DefaultRoomConfig(),
+		ServerPort:  8716,
+		LogLevel:    "info",
+		MetricsPort: 9716,
+		GrpcPort:    17016,
+	}
+
+	server := NewLockStepServer(config)
+
+	// 启动服务器
+	err := server.Start()
+	if err != nil {
+		t.Fatalf("Failed to start server: %v", err)
+	}
+	defer server.Stop()
+
+	// 验证gRPC服务器已启动
+	if server.grpcServer == nil {
+		t.Error("Expected gRPC server to be started")
+	}
+
+	// 测试重复启动gRPC服务器
+	err = server.StartGrpcServer()
+	if err == nil {
+		t.Error("Expected error when starting gRPC server that is already running")
+	}
+
+	expected := "gRPC server already started"
+	if err.Error() != expected {
+		t.Errorf("Expected error message '%s', got '%s'", expected, err.Error())
+	}
+}
+
+// TestLockStepServer_StartGrpcServer_NoPort 测试未配置gRPC端口时不启动gRPC服务器
+func TestLockStepServer_StartGrpcServer_NoPort(t *testing.T) {
+	config := &LockStepConfig{
+		KcpConfig:   kcp2k.DefaultKcpConfig(),
+		RoomConfig:  DefaultRoomConfig(),
+		ServerPort:  8717,
+		LogLevel:    "info",
+		MetricsPort: 9717,
+		GrpcPort:    0, // 未配置gRPC端口
+	}
+
+	server := NewLockStepServer(config)
+
+	// 启动服务器
+	err := server.Start()
+	if err != nil {
+		t.Fatalf("Failed to start server: %v", err)
+	}
+	defer server.Stop()
+
+	// 验证gRPC服务器未启动
+	if server.grpcServer != nil {
+		t.Error("Expected gRPC server to not be started when GrpcPort is 0")
 	}
 }

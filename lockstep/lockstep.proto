@@ -41,15 +41,6 @@ message LogoutResponse {
     BaseResponse base = 1;
 }
 
-message JoinRoomRequest {
-    string room_id = 1;
-    int32 player_id = 2;
-}
-message JoinRoomResponse {
-    BaseResponse base = 1;
-    string room_id = 2;
-}
-
 message ReadyRequest {
     bool ready = 1;
 }
@@ -159,20 +150,18 @@ message LockStepMessage {
         LOGIN_RESP = 2;
         LOGOUT_REQ = 3;
         LOGOUT_RESP = 4;
-        JOIN_ROOM_REQ = 5;
-        JOIN_ROOM_RESP = 6;
-        READY_REQ = 7;
-        READY_RESP = 8;
-        BROADCAST_REQ = 9;
-        BROADCAST_RESP = 10;
-        FRAME_REQ = 11;
-        FRAME_RESP = 12;
-        GAME_START = 13;
-        FRAME = 14;
-        INPUT = 15;
-        PLAYER_STATE = 16;
-        ROOM_STATE = 17;
-        BROADCAST = 18;
+        READY_REQ = 5;
+        READY_RESP = 6;
+        BROADCAST_REQ = 7;
+        BROADCAST_RESP = 8;
+        FRAME_REQ = 9;
+        FRAME_RESP = 10;
+        GAME_START = 11;
+        FRAME = 12;
+        INPUT = 13;
+        PLAYER_STATE = 14;
+        ROOM_STATE = 15;
+        BROADCAST = 16;
     }
 
     MessageType type = 1;
@@ -182,19 +171,17 @@ message LockStepMessage {
         LoginResponse login_resp = 3;
         LogoutRequest logout_req = 4;
         LogoutResponse logout_resp = 5;
-        JoinRoomRequest join_room_req = 6;
-        JoinRoomResponse join_room_resp = 7;
-        ReadyRequest ready_req = 8;
-        ReadyResponse ready_resp = 9;
-        BroadcastRequest broadcast_req = 10;
-        BroadcastResponse broadcast_resp = 11;
-        FrameRequest frame_req = 12;
-        FrameResponse frame_resp = 13;
-        GameStartMessage game_start = 14;
-        FrameMessage frame = 15;
-        InputMessage input = 16;
-        PlayerStateMessage player_state = 17;
-        RoomStateMessage room_state = 18;
-        BroadcastMessage broadcast = 19;
+        ReadyRequest ready_req = 6;
+        ReadyResponse ready_resp = 7;
+        BroadcastRequest broadcast_req = 8;
+        BroadcastResponse broadcast_resp = 9;
+        FrameRequest frame_req = 10;
+        FrameResponse frame_resp = 11;
+        GameStartMessage game_start = 12;
+        FrameMessage frame = 13;
+        InputMessage input = 14;
+        PlayerStateMessage player_state = 15;
+        RoomStateMessage room_state = 16;
+        BroadcastMessage broadcast = 17;
     }
 }

@@ -108,7 +108,8 @@ func (rt *ReconnectTest) startServer() error {
 	roomConfig.MaxPlayers = 2
 	roomConfig.MinPlayers = 2
 
-	room, err := server.CreateRoom(string(rt.roomID), roomConfig)
+	playerIDs := []lockstep.PlayerID{1, 2} // 支持最多2个玩家
+	room, err := server.CreateRoom(roomConfig, playerIDs)
 	if err != nil {
 		return fmt.Errorf("failed to create room: %w", err)
 	}
@@ -199,7 +200,7 @@ func (rt *ReconnectTest) createClients() error {
 // joinRoom 加入房间
 func (rt *ReconnectTest) joinRoom() error {
 	// 客户端1加入房间
-	if err := rt.client1.JoinRoom(string(rt.roomID), lockstep.PlayerID(1)); err != nil {
+	if err := rt.client1.SendLogin("test_token", lockstep.PlayerID(1)); err != nil {
 		return fmt.Errorf("client1 join room failed: %v", err)
 	}
 
@@ -209,7 +210,7 @@ func (rt *ReconnectTest) joinRoom() error {
 	}
 
 	// 客户端2加入房间
-	if err := rt.client2.JoinRoom(string(rt.roomID), lockstep.PlayerID(2)); err != nil {
+	if err := rt.client2.SendLogin("test_token", lockstep.PlayerID(2)); err != nil {
 		return fmt.Errorf("client2 join room failed: %v", err)
 	}
 
@@ -349,8 +350,8 @@ func (rt *ReconnectTest) simulateReconnect() error {
 	}
 
 	// 重新加入房间（这里会触发重连逻辑）
-	if err := client1.JoinRoom(string(rt.roomID), lockstep.PlayerID(1)); err != nil {
-		return fmt.Errorf("client1 rejoin room failed: %v", err)
+	if err := client1.SendLogin("test_token", lockstep.PlayerID(1)); err != nil {
+		return fmt.Errorf("client1 login failed: %v", err)
 	}
 
 	// 重新准备状态
@@ -430,9 +431,13 @@ func (rt *ReconnectTest) testFrameSyncAfterReconnect() error {
 			log.Printf("Client2 received frame %d, client1 no frame", frame2.FrameId)
 		} else {
 			log.Printf("No frames received by either client in iteration %d", i+1)
+			continue // 没有帧数据时继续下一次循环
 		}
 
-		log.Printf("Frame sync OK: both clients got frame %d", frame1.FrameId)
+		// 只有当 frame1 不为 nil 时才访问其 FrameId
+		if frame1 != nil {
+			log.Printf("Frame sync OK: both clients got frame %d", frame1.FrameId)
+		}
 	}
 
 	log.Println("Frame sync test after reconnect completed successfully")
