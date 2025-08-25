@@ -1,145 +1,177 @@
-# KCP2K 测试套件
+# KCP2K Test Suite
 
-本目录包含 KCP2K 的各种测试程序，用于验证协议的正确性和性能。
+[English](README.md) | [中文](README_CN.md)
 
-## 目录结构
+This directory contains various test programs for KCP2K to verify protocol correctness and performance.
 
-### 跨语言兼容性测试
+## Directory Structure
 
-#### 场景 1: C# 服务端 + Go 客户端
-- 服务端：C# KcpServer
-- 客户端：Go KcpClient
-- 测试目录：`csharp_server_go_client/`
+### Cross-Language Compatibility Tests
 
-#### 场景 2: Go 服务端 + C# 客户端
-- 服务端：Go KcpServer
-- 客户端：C# KcpClient
-- 测试目录：`go_server_csharp_client/`
+#### Scenario 1: C# Server + Go Client
+- Server: C# KcpServer
+- Client: Go KcpClient
+- Test Directory: `csharp_server_go_client/`
 
-### 压力测试程序
+#### Scenario 2: Go Server + C# Client
+- Server: Go KcpServer
+- Client: C# KcpClient
+- Test Directory: `go_server_csharp_client/`
+
+### Stress Testing Programs
 
 #### stress_server/
-压力测试服务器
-- **功能**: 专门用于压力测试的高性能服务器
-- **特点**: 支持大量并发连接，优化内存使用
+Stress test server
+- **Function**: High-performance server designed specifically for stress testing
+- **Features**: Supports large numbers of concurrent connections with optimized memory usage
 
 #### stress_client/
-压力测试客户端
-- **功能**: 模拟大量客户端连接进行压力测试
-- **特点**: 可配置连接数、发送频率等参数
+Stress test client
+- **Function**: Simulates large numbers of client connections for stress testing
+- **Features**: Configurable connection count, send frequency, and other parameters
 
 #### stress_test/
-压力测试主控程序
-- **功能**: 协调多个服务器和客户端进行压力测试
-- **用法**: 
+Stress test controller
+- **Function**: Coordinates multiple servers and clients for stress testing
+- **Usage**: 
   ```bash
   go run tests/stress_test/main.go -servers 10 -clients-per-server 5
   ```
 
-## 测试内容
+## Test Coverage
 
-1. **连接建立和断开**
-   - 基本连接/断开
-   - 超时断开
-   - 主动踢出
+1. **Connection Establishment and Termination**
+   - Basic connect/disconnect
+   - Timeout disconnection
+   - Active client removal
 
-2. **消息传输**
-   - 可靠消息 (Reliable)
-   - 不可靠消息 (Unreliable)
-   - 空消息
-   - 最大尺寸消息
-   - 多消息批量发送
+2. **Message Transmission**
+   - Reliable messages (Reliable)
+   - Unreliable messages (Unreliable)
+   - Empty messages
+   - Maximum size messages
+   - Batch message sending
 
-3. **错误处理**
-   - 无效消息
-   - 超大消息
-   - 网络异常
+3. **Error Handling**
+   - Invalid messages
+   - Oversized messages
+   - Network exceptions
 
-4. **性能测试**
-   - 延迟测试
-   - 吞吐量测试
-   - 并发连接测试
+4. **Performance Testing**
+   - Latency testing
+   - Throughput testing
+   - Concurrent connection testing
 
-5. **压力测试**
-   - 大量并发连接测试
-   - 长时间稳定性测试
-   - 资源使用监控
-   - 极限负载测试
+5. **Stress Testing**
+   - Large-scale concurrent connection testing
+   - Long-term stability testing
+   - Resource usage monitoring
+   - Maximum load testing
 
-## 运行测试
+## Running Tests
 
-### 手动运行测试组件
+### Manual Test Component Execution
 
-#### 跨语言兼容性测试
+#### Cross-Language Compatibility Tests
 ```bash
-# C# 服务端 + Go 客户端
+# C# Server + Go Client
 cd tests/csharp_server_go_client
 dotnet run &
 go run go_client.go
 
-# Go 服务端 + C# 客户端
+# Go Server + C# Client
 cd tests/go_server_csharp_client
 go run go_server.go &
 dotnet run
 ```
 
-#### 压力测试组件
+#### Stress Test Components
 ```bash
-# 构建压力测试程序
+# Build stress test programs
 go build -o tests/stress_server/stress_server ./tests/stress_server
 go build -o tests/stress_client/stress_client ./tests/stress_client
 go build -o tests/stress_test/stress_test ./tests/stress_test
 
-# 手动运行压力测试
+# Run stress test manually
 ./tests/stress_test/stress_test -servers 500 -clients-per-server 10 -fps 15
 ```
 
-### 使用测试脚本
+### Using Test Scripts
 
-#### 跨语言兼容性测试脚本
+#### Cross-Language Compatibility Test Scripts
 ```bash
-# 运行所有跨语言测试
+# Run all cross-language tests
 ./tools/scripts/testing/run_all_tests.sh
 
-# 运行特定场景测试
+# Run specific scenario tests
 ./tools/scripts/testing/run_csharp_server_go_client.sh
 ./tools/scripts/testing/run_go_server_csharp_client.sh
 ```
 
-#### 性能测试脚本
+#### Performance Test Scripts
 ```bash
-# 小规模测试 (推荐先运行)
+# Small-scale testing (recommended to run first)
 ./tools/scripts/performance/test_small.sh
 
-# 完整规模测试 (需要大量系统资源)
+# Full-scale testing (requires significant system resources)
 ./tools/scripts/performance/test_full.sh
 ```
 
-#### 脚本参数说明
-- **test_small.sh**: 10服务器 × 5客户端 × 15FPS，适合功能验证
-- **test_full.sh**: 500服务器 × 10客户端 × 15FPS，适合性能压力测试
-- **测试时长**: 默认60秒，可通过脚本内参数调整
-- **端口范围**: 10000-10499 (小规模), 10000-10499 (完整规模)
+#### Script Parameter Description
+- **test_small.sh**: 10 servers × 5 clients × 15 FPS, suitable for functionality verification
+- **test_full.sh**: 500 servers × 10 clients × 15 FPS, suitable for performance stress testing
+- **Test Duration**: Default 60 seconds, adjustable via script parameters
+- **Port Range**: 10000-10499 (small-scale), 10000-10499 (full-scale)
 
-## 注意事项
+## Important Notes
 
-### 环境要求
-- 运行测试前请确保在项目根目录执行
-- 确保系统已安装 .NET 8.0 和 Go 1.19+
-- 测试结果和日志文件保存在 `tests/test_results/` 目录
+### Environment Requirements
+- Ensure tests are executed from the project root directory
+- Verify that .NET 8.0 and Go 1.19+ are installed on the system
+- Test results and log files are saved in the `tests/test_results/` directory
 
-### 脚本使用注意事项
-1. **权限**: 确保脚本有执行权限 (`chmod +x script_name.sh`)
-2. **依赖**: 性能测试需要先构建相关的测试程序
-3. **资源**: 完整规模测试需要大量 CPU 和内存资源
-4. **平台**: 脚本主要在 Unix-like 系统上测试 (Linux/macOS)
+### Script Usage Guidelines
+1. **Permissions**: Ensure scripts have execution permissions (`chmod +x script_name.sh`)
+2. **Dependencies**: Performance tests require building the related test programs first
+3. **Resources**: Full-scale testing requires significant CPU and memory resources
+4. **Platform**: Scripts are primarily tested on Unix-like systems (Linux/macOS)
 
-## 测试结果
+### Performance Considerations
+- **Small-scale tests**: Suitable for development and CI/CD environments
+- **Full-scale tests**: Intended for dedicated testing environments
+- **Resource monitoring**: Monitor system resources during stress testing
+- **Network configuration**: Ensure sufficient network buffers for high-load testing
 
-测试结果将保存在 `test_results/` 目录中，包括：
-- 连接性测试报告
-- 消息传输测试报告
-- 跨语言兼容性测试报告
-- 压力测试报告
-- 性能基准测试报告
-- 错误日志
+## Test Results
+
+Test results are saved in the `test_results/` directory, including:
+- Connectivity test reports
+- Message transmission test reports
+- Cross-language compatibility test reports
+- Stress test reports
+- Performance benchmark reports
+- Error logs
+
+## Test Configuration
+
+### Customizing Test Parameters
+
+Most test scripts support environment variables for customization:
+
+```bash
+# Example: Custom test duration and connection limits
+export TEST_DURATION=120  # 2 minutes
+export MAX_CLIENTS=1000   # Maximum clients per server
+export TEST_FPS=30        # Messages per second
+
+./tools/scripts/performance/test_full.sh
+```
+
+### Troubleshooting
+
+- **Port conflicts**: Ensure test port ranges don't conflict with other services
+- **Resource limits**: Check system ulimits for file descriptors and memory
+- **Network issues**: Verify firewall settings don't block test traffic
+- **Build failures**: Ensure all dependencies are properly installed
+
+For detailed test configuration and advanced usage, refer to the individual test program documentation in their respective directories.
