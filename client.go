@@ -183,6 +183,10 @@ func (c *KcpClient) RawReceive() ([]byte, bool) {
 
 	n, _, err := c.conn.ReadFromUDP(c.rawReceiveBuffer)
 	if err != nil {
+		if errors.Is(err, net.ErrClosed) || isTimeoutError(err) {
+			return nil, false
+		}
+		Log.Error("[KCP] Client: ReadFromUDP error: %v", err)
 		return nil, false
 	}
 	if n <= 0 {

@@ -136,14 +136,10 @@ func (s *KcpServer) rawReceiveFrom() ([]byte, *net.UDPAddr, bool) {
 
 	n, addr, err := s.conn.ReadFromUDP(s.recvBuf)
 	if err != nil {
-		if errors.Is(err, net.ErrClosed) {
+		if errors.Is(err, net.ErrClosed) || isTimeoutError(err) {
 			return nil, nil, false
 		}
-
-		// 只在非超时错误时记录
-		if !isTimeoutError(err) {
-			Log.Error("[KCP] Server: ReadFromUDP error: %v", err)
-		}
+		Log.Error("[KCP] Server: ReadFromUDP error: %v", err)
 		return nil, nil, false
 	}
 	if n <= 0 {
