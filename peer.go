@@ -262,8 +262,10 @@ func (p *KcpPeer) ReceiveNextReliable() (KcpHeaderReliable, []byte, bool) {
 		return KcpHeaderPing, nil, false
 	}
 
+	p.lock.Lock()
 	msgSize := p.Kcp.PeekSize()
 	if msgSize <= 0 {
+		p.lock.Unlock()
 		return KcpHeaderPing, nil, false
 	}
 
@@ -277,6 +279,7 @@ func (p *KcpPeer) ReceiveNextReliable() (KcpHeaderReliable, []byte, bool) {
 				fmt.Sprintf("[KCP] Peer: Possible allocation attack for msgSize %d > buffer %d. Disconnecting the connection.",
 					msgSize, len(p.kcpMessageBuffer)))
 		}
+		p.lock.Unlock()
 		p.Disconnect()
 		return KcpHeaderPing, nil, false
 	}
@@ -289,6 +292,7 @@ func (p *KcpPeer) ReceiveNextReliable() (KcpHeaderReliable, []byte, bool) {
 			p.Handler.OnError(ErrorCodeInvalidReceive,
 				fmt.Sprintf("[KCP] Peer: Receive failed with error=%d. closing connection.", received))
 		}
+		p.lock.Unlock()
 		p.Disconnect()
 		return KcpHeaderPing, nil, false
 	}
@@ -301,9 +305,11 @@ func (p *KcpPeer) ReceiveNextReliable() (KcpHeaderReliable, []byte, bool) {
 			p.Handler.OnError(ErrorCodeInvalidReceive,
 				fmt.Sprintf("[KCP] Peer: Receive failed to parse header: %d is not defined in KcpHeaderReliable.", headerByte))
 		}
+		p.lock.Unlock()
 		p.Disconnect()
 		return KcpHeaderPing, nil, false
 	}
+	p.lock.Unlock()
 
 	// 提取内容（不含头部）
 	message := make([]byte, msgSize-1)
@@ -323,53 +329,17 @@ func (p *KcpPeer) OnRawInputReliable(message []byte) {
 	}
 
 	// Sanity: only feed valid KCP segments (cmd in 81..84 and length >= IKCP_OVERHEAD)
-	if len(message) < kcp.IKCP_OVERHEAD || !(message[4] >= 81 && message[4] <= 84) {
-		previewLen := len(message)
-		if previewLen > 24 {
-			previewLen = 24
-		}
-		Log.Debug("[KCP] Peer: drop non-KCP on reliable path len=%d first=% X", len(message), message[:previewLen])
+	if len(message) < kcp.IKCP_OVERHEAD || !(message[4] >= kcp.IKCP_CMD_PUSH && message[4] <= kcp.IKCP_CMD_WINS) {
 		return
 	}
 
 	// input into kcp, but skip channel byte
-	input := p.Kcp.Input(message, true, false)
+	p.lock.Lock()
+	input := p.Kcp.Input(message, true, true)
+	p.lock.Unlock()
 	if input != 0 {
-		if input == -2 || input == -1 {
-			// Diagnostic for non-KCP or malformed segment
-			previewLen := len(message)
-			if previewLen > 24 {
-				previewLen = 24
-			}
-			conv := uint32(0)
-			cmd := byte(0)
-			frg := byte(0)
-			wnd := uint16(0)
-			ts := uint32(0)
-			sn := uint32(0)
-			una := uint32(0)
-			if len(message) >= 24 {
-				if v, ok := Decode32U(message, 0); ok {
-					conv = v
-				}
-				cmd = message[4]
-				frg = message[5]
-				wnd = uint16(message[6]) | uint16(message[7])<<8
-				if v, ok := Decode32U(message, 8); ok {
-					ts = v
-				}
-				if v, ok := Decode32U(message, 12); ok {
-					sn = v
-				}
-				if v, ok := Decode32U(message, 16); ok {
-					una = v
-				}
-			}
-			Log.Debug("[KCP] Peer: input=%d len=%d state=%v conv=%d cmd=%d frg=%d wnd=%d ts=%d sn=%d una=%d first=% X",
-				input, len(message), p.State, conv, cmd, frg, wnd, ts, sn, una, message[:previewLen])
-		} else {
-			Log.Warning("[KCP] Peer: input failed with error=%d for buffer with length=%d", input, len(message))
-		}
+		Log.Warning("[KCP] Peer: input failed with error=%d for buffer with length=%d", input, len(message))
+		return
 	}
 }
 
@@ -821,14 +791,18 @@ func (p *KcpPeer) TickOutgoing() {
 		p.HandleDeadLink()
 		// 在连接状态下也需要调用Update来发送握手消息
 		if p.Kcp != nil {
+			p.lock.Lock()
 			p.Kcp.Update()
+			p.lock.Unlock()
 		}
 	case KcpAuthenticated:
 		// 检测死链接
 		p.HandleDeadLink()
 		// 更新刷新出消息
 		if p.Kcp != nil {
+			p.lock.Lock()
 			p.Kcp.Update()
+			p.lock.Unlock()
 		}
 	case KcpDisconnected:
 		// 断开连接时什么都不做
