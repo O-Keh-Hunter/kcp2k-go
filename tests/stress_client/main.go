@@ -58,13 +58,7 @@ func NewClient(id, serverID int) *Client {
 
 func (c *Client) Connect(serverAddr string) error {
 	// 使用优化后的KCP配置
-	config := kcp2k.OptimizedKcpConfig()
-	// 针对压力测试进行微调
-	config.DualMode = false       // 压力测试只使用IPv4
-	config.SendWindowSize = 32000 // 保持大窗口用于高吞吐量测试
-	config.ReceiveWindowSize = 32000
-	config.Timeout = 2000      // 压力测试使用较短超时
-	config.MaxRetransmits = 80 // 增加重传次数确保可靠性
+	config := kcp2k.HighPerformanceKcpConfig()
 
 	// 创建KCP2K客户端
 	c.KcpClient = kcp2k.NewKcpClient(
@@ -97,7 +91,7 @@ func (c *Client) Connect(serverAddr string) error {
 	}
 
 	// 启动Tick循环来处理网络事件
-	go c.tickLoop()
+	go c.tickLoop(time.Duration(config.Interval) * time.Millisecond)
 
 	// log.Printf("Client %d connected to server %d at %s", c.ID, c.ServerID, serverAddr)
 	return nil
@@ -148,8 +142,8 @@ func (c *Client) onError(error kcp2k.ErrorCode, reason string) {
 	log.Printf("Client %d error: %v - %s", c.ID, error, reason)
 }
 
-func (c *Client) tickLoop() {
-	ticker := time.NewTicker(10 * time.Millisecond) // KCP建议10ms间隔
+func (c *Client) tickLoop(interval time.Duration) {
+	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 
 	for {

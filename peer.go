@@ -478,6 +478,9 @@ func (p *KcpPeer) SendPong(pingTimestamp uint32) {
 
 // SendReliable 发送可靠消息
 func (p *KcpPeer) SendReliable(header KcpHeaderReliable, content []byte) {
+	p.lock.Lock()
+	defer p.lock.Unlock()
+
 	// 1 字节头部 + 内容需要适合发送缓冲区
 	if 1+len(content) > len(p.kcpSendBuffer) {
 		// 否则内容大于 MaxMessageSize，让用户知道！
@@ -488,10 +491,6 @@ func (p *KcpPeer) SendReliable(header KcpHeaderReliable, content []byte) {
 		}
 		return
 	}
-
-	// 使用互斥锁保护共享缓冲区
-	p.lock.Lock()
-	defer p.lock.Unlock()
 
 	// 写入通道头部
 	p.kcpSendBuffer[0] = byte(header)
@@ -515,16 +514,15 @@ func (p *KcpPeer) SendReliable(header KcpHeaderReliable, content []byte) {
 
 // SendUnreliable 发送不可靠消息
 func (p *KcpPeer) SendUnreliable(header KcpHeaderUnreliable, content []byte) {
+	p.lock.Lock()
+	defer p.lock.Unlock()
+
 	// 消息大小需要 <= 不可靠最大大小
 	if len(content) > p.UnreliableMax {
 		// 否则内容大于 MaxMessageSize，让用户知道！
 		Log.Error("[KCP] Peer: failed to send unreliable message of size %d because it's larger than UnreliableMaxMessageSize=%d", len(content), p.UnreliableMax)
 		return
 	}
-
-	// 使用互斥锁保护共享缓冲区
-	p.lock.Lock()
-	defer p.lock.Unlock()
 
 	// 写入通道头部
 	// 从 0 开始，1 字节
@@ -590,7 +588,6 @@ func (p *KcpPeer) SendData(data []byte, channel KcpChannel) {
 func (p *KcpPeer) SendHello() {
 	// 发送带有 'Hello' 头部的空消息
 	// cookie 自动包含在所有消息中
-
 	p.SendReliable(KcpHeaderHello, nil)
 }
 

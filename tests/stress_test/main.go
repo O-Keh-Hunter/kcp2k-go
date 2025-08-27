@@ -131,7 +131,7 @@ func (st *StressTest) Run() error {
 	}()
 
 	// Wait for servers to be ready
-	time.Sleep(15 * time.Second)
+	time.Sleep(5 * time.Second)
 
 	// Start clients
 	wg.Add(1)

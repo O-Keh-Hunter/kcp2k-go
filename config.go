@@ -5,7 +5,6 @@ import (
 )
 
 // KcpConfig 包含KCP高层协议的全部配置项，对应C#版KcpConfig
-
 type KcpConfig struct {
 	DualMode          bool
 	RecvBufferSize    int
