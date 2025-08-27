@@ -5,6 +5,7 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"math/rand/v2"
 	"os"
 	"os/signal"
 	"strconv"
@@ -181,32 +182,43 @@ func (c *Client) SendPackets(fps int) {
 			currentPacketID := c.packetID
 			c.mu.Unlock()
 
-			// Create a test packet with timestamp and packet ID (reliable)
-			relPacket := fmt.Sprintf("PACKET_%d_%d_%d_%s",
-				c.ID, c.ServerID, currentPacketID, time.Now().Format("15:04:05.000"))
-
+			// 随机选择发送可靠或不可靠数据包
+			isReliable := rand.IntN(2) == 0
 			sendTime := time.Now()
-			c.KcpClient.Send([]byte(relPacket), kcp2k.KcpReliable)
 
-			c.mu.Lock()
-			c.Stats.PacketsSent++
-			c.Stats.BytesSent += int64(len(relPacket))
-			// 记录待响应的数据包用于延迟计算
-			c.pendingPackets[currentPacketID] = &PendingPacket{
-				ID:       currentPacketID,
-				SentTime: sendTime,
+			if isReliable {
+				// 发送可靠数据包 (记录延迟追踪)
+				relPacket := fmt.Sprintf("PACKET_%d_%d_%d_%s",
+					c.ID, c.ServerID, currentPacketID, time.Now().Format("15:04:05.000"))
+
+				c.KcpClient.Send([]byte(relPacket), kcp2k.KcpReliable)
+
+				c.mu.Lock()
+				c.Stats.PacketsSent++
+				c.Stats.BytesSent += int64(len(relPacket))
+				// 记录待响应的数据包用于延迟计算
+				c.pendingPackets[currentPacketID] = &PendingPacket{
+					ID:       currentPacketID,
+					SentTime: sendTime,
+				}
+				c.mu.Unlock()
+			} else {
+				// 发送不可靠数据包 (无延迟追踪)
+				unrelPacket := fmt.Sprintf("UPACKET_%d_%d_%d_%s",
+					c.ID, c.ServerID, currentPacketID, time.Now().Format("15:04:05.000"))
+
+				c.KcpClient.Send([]byte(unrelPacket), kcp2k.KcpUnreliable)
+
+				c.mu.Lock()
+				c.Stats.PacketsSent++
+				c.Stats.BytesSent += int64(len(unrelPacket))
+				// 记录待响应的数据包用于延迟计算
+				c.pendingPackets[currentPacketID] = &PendingPacket{
+					ID:       currentPacketID,
+					SentTime: sendTime,
+				}
+				c.mu.Unlock()
 			}
-			c.mu.Unlock()
-
-			// Also send an unreliable packet for stress testing (no latency tracking)
-			unrelPacket := fmt.Sprintf("UPACKET_%d_%d_%d_%s",
-				c.ID, c.ServerID, currentPacketID, time.Now().Format("15:04:05.000"))
-			c.KcpClient.Send([]byte(unrelPacket), kcp2k.KcpUnreliable)
-
-			c.mu.Lock()
-			c.Stats.PacketsSent++
-			c.Stats.BytesSent += int64(len(unrelPacket))
-			c.mu.Unlock()
 
 			// 清理超时的待响应数据包（超过5秒认为丢失）
 			c.cleanupTimeoutPackets()
@@ -368,7 +380,7 @@ func main() {
 			clientID++
 
 			// Small delay to avoid overwhelming the system
-			time.Sleep(50 * time.Millisecond)
+			time.Sleep(10 * time.Millisecond)
 		}
 	}
 

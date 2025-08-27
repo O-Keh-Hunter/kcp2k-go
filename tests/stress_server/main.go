@@ -99,11 +99,14 @@ func (s *Server) onData(connectionId int, data []byte, channel kcp2k.KcpChannel)
 	// 处理客户端数据包并生成回显响应
 	dataStr := string(data)
 	var response []byte
-	
+
 	// 如果是测试数据包，转换为ECHO格式
 	if len(dataStr) > 7 && dataStr[:7] == "PACKET_" {
 		// 将 PACKET_ 替换为 ECHO_ 以便客户端识别
 		response = []byte("ECHO_" + dataStr[7:])
+	} else if len(dataStr) > 8 && dataStr[:8] == "UPACKET_" {
+		// 将 UPACKET_ 替换为 ECHO_ 以便客户端识别
+		response = []byte("ECHO_" + dataStr[8:])
 	} else {
 		// 对于其他数据，直接回显
 		response = data
