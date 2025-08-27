@@ -73,7 +73,7 @@ type KcpPeer struct {
 	Handler KcpPeerEventHandler
 
 	// 新增：RTT 属性（对应 C# 版的 rttInMilliseconds）
-	rttInMilliseconds uint32
+	rtt uint32
 
 	lock sync.Mutex
 }
@@ -122,7 +122,7 @@ func (p *KcpPeer) Reset(config KcpConfig) {
 	p.Timeout = config.Timeout
 
 	// 重置 RTT
-	p.rttInMilliseconds = 0
+	p.rtt = 0
 
 	// precompute max message sizes based on mtu and wnd
 	p.ReliableMax = ReliableMaxMessageSize(config.Mtu, config.ReceiveWindowSize)
@@ -252,7 +252,7 @@ func (p *KcpPeer) ReceiveBufferCount() int {
 
 // GetRTT 返回 RTT 值（毫秒）
 func (p *KcpPeer) GetRTT() uint32 {
-	return p.rttInMilliseconds
+	return p.rtt
 }
 
 // ReceiveNextReliable 从 kcp 读取下一个可靠消息类型和内容
@@ -797,8 +797,7 @@ func (p *KcpPeer) TickIncoming_Authenticated(time uint32) {
 			if len(message) == 4 {
 				if originalTimestamp, ok := Decode32U(message, 0); ok {
 					if time >= originalTimestamp {
-						rtt := time - originalTimestamp
-						p.rttInMilliseconds = rtt
+						p.rtt = time - originalTimestamp
 					}
 				}
 			}
