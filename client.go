@@ -96,7 +96,6 @@ func (c *KcpClient) OnError(errorCode ErrorCode, message string) {
 // RawSend sends one raw packet over UDP.
 func (c *KcpClient) RawSend(data []byte) {
 	if c.conn == nil {
-		Log.Warning("[KCP] Client: conn is nil")
 		return
 	}
 	_, err := c.conn.Write(data)
@@ -175,15 +174,15 @@ func (c *KcpClient) RawReceive() ([]byte, bool) {
 	if c.conn == nil {
 		return nil, false
 	}
-	// 使用非阻塞模式，设置短超时
-	c.conn.SetReadDeadline(time.Now().Add(1 * time.Millisecond))
+
+	err := c.conn.SetReadDeadline(time.Now().Add(1 * time.Millisecond))
+	if err != nil {
+		Log.Error("[KCP] Client: SetReadDeadline error: %v", err)
+		return nil, false
+	}
+
 	n, _, err := c.conn.ReadFromUDP(c.rawReceiveBuffer)
 	if err != nil {
-		// 检查是否是超时错误
-		if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
-			return nil, false
-		}
-		// 其他错误也返回false
 		return nil, false
 	}
 	if n <= 0 {

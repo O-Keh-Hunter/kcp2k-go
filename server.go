@@ -126,7 +126,6 @@ func (s *KcpServer) GetConnection(connectionId int) *KcpServerConnection {
 // receive one datagram non-blocking-ish using deadlines.
 func (s *KcpServer) rawReceiveFrom() ([]byte, *net.UDPAddr, bool) {
 	if s.conn == nil {
-		Log.Error("[KCP] Server: conn is nil")
 		return nil, nil, false
 	}
 	err := s.conn.SetReadDeadline(time.Now().Add(1 * time.Millisecond))

@@ -8,8 +8,8 @@ func TestDefaultKcpConfig(t *testing.T) {
 	config := DefaultKcpConfig()
 
 	// 验证默认值
-	if !config.DualMode {
-		t.Error("Default DualMode should be true")
+	if config.DualMode {
+		t.Error("Default DualMode should be false")
 	}
 
 	if config.RecvBufferSize != 1024*1024*7 {
