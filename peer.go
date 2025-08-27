@@ -72,12 +72,6 @@ type KcpPeer struct {
 	// 事件回调
 	Handler KcpPeerEventHandler
 
-	// 新增：速率统计相关字段（对应 C# 版的 kcp.snd_wnd, kcp.rcv_wnd, kcp.mtu, kcp.interval）
-	sendWnd  uint
-	recvWnd  uint
-	mtu      int
-	interval uint
-
 	// 新增：RTT 属性（对应 C# 版的 rttInMilliseconds）
 	rttInMilliseconds uint32
 
@@ -126,15 +120,6 @@ func (p *KcpPeer) Reset(config KcpConfig) {
 	p.LastPingTime = 0
 	p.startTime = time.Now()
 	p.Timeout = config.Timeout
-
-	// 初始化速率统计相关字段（注意速率计算应使用有效 MTU = 配置MTU - 元数据大小）
-	p.sendWnd = config.SendWindowSize
-	p.recvWnd = config.ReceiveWindowSize
-	p.mtu = config.Mtu - METADATA_SIZE_RELIABLE
-	if p.mtu < 0 {
-		p.mtu = 0
-	}
-	p.interval = config.Interval
 
 	// 重置 RTT
 	p.rttInMilliseconds = 0
