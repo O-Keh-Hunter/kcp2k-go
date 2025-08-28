@@ -22,15 +22,16 @@ func ResolveHostname(hostname string) ([]net.IP, bool) {
 // ConfigureSocketBuffers configures socket buffer sizes
 // If connections drop under heavy load, increase to OS limit.
 // If still not enough, increase the OS limit.
-func ConfigureSocketBuffers(conn *net.UDPConn, recvBufferSize, sendBufferSize int) {
-	if conn == nil {
-		return
+func ConfigureSocketBuffers(conn *net.UDPConn, recvBufferSize, sendBufferSize int) error {
+	err := conn.SetReadBuffer(recvBufferSize)
+	if err != nil {
+		return err
 	}
-
-	conn.SetReadBuffer(recvBufferSize)
-	conn.SetWriteBuffer(sendBufferSize)
-
-	Log.Debug(fmt.Sprintf("[KCP] Common: RecvBuf = %d SendBuf = %d", recvBufferSize, sendBufferSize))
+	err = conn.SetWriteBuffer(sendBufferSize)
+	if err != nil {
+		return err
+	}
+	return nil
 }
 
 // ConnectionHash generates a connection hash from IP+Port

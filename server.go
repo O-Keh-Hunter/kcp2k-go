@@ -56,7 +56,7 @@ func (s *KcpServer) LocalEndPoint() net.Addr {
 func (s *KcpServer) Start(port uint16) error {
 	if s.conn != nil {
 		Log.Warning("[KCP] Server: already started!")
-		return nil
+		return errors.New("server already started")
 	}
 
 	udpConn, err := s.createServerSocket(s.dualMode, port)
@@ -65,7 +65,10 @@ func (s *KcpServer) Start(port uint16) error {
 	}
 	s.conn = udpConn
 
-	ConfigureSocketBuffers(s.conn, s.config.RecvBufferSize, s.config.SendBufferSize)
+	err = ConfigureSocketBuffers(s.conn, s.config.RecvBufferSize, s.config.SendBufferSize)
+	if err != nil {
+		return err
+	}
 
 	return nil
 }
