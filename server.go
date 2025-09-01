@@ -27,6 +27,16 @@ type KcpServer struct {
 	// connections by id
 	connections map[int]*KcpServerConnection
 	toRemove    map[int]struct{}
+
+	// buffer pool for reducing GC pressure
+	bufferPool Pool[[]byte]
+
+	// optimization: reuse connection slice to avoid allocations
+	connectionSlice []*KcpServerConnection
+	
+	// object pools for memory optimization
+	connectionPool *ConnectionPool
+	bufferPoolOpt  *BufferPool
 }
 
 func NewKcpServer(onConnected func(int), onData func(int, []byte, KcpChannel), onDisconnected func(int), onError func(int, ErrorCode, string), config KcpConfig) *KcpServer {
@@ -40,11 +50,36 @@ func NewKcpServer(onConnected func(int), onData func(int, []byte, KcpChannel), o
 		dualMode:       config.DualMode,
 		connections:    make(map[int]*KcpServerConnection),
 		toRemove:       make(map[int]struct{}),
+		bufferPoolOpt:  NewBufferPool(config),
 	}
+	s.connectionPool = NewConnectionPool(config, s.bufferPoolOpt)
+	
+	// initialize buffer pool
+	s.bufferPool = New(func() []byte {
+		return make([]byte, config.Mtu)
+	})
+
 	return s
 }
 
 func (s *KcpServer) IsActive() bool { return s.conn != nil }
+
+// getBuf gets a buffer from the pool
+func (s *KcpServer) getBuf(size int) []byte {
+	buf := s.bufferPool.Get()
+	if cap(buf) >= size {
+		return buf[:size]
+	}
+	return make([]byte, size)
+}
+
+// putBuf returns a buffer to the pool
+func (s *KcpServer) putBuf(buf []byte) {
+	if cap(buf) > 0 {
+		buf = buf[:0] // reset length but keep capacity
+		s.bufferPool.Put(buf)
+	}
+}
 
 func (s *KcpServer) LocalEndPoint() net.Addr {
 	if s.conn == nil {
@@ -148,7 +183,8 @@ func (s *KcpServer) rawReceiveFrom() ([]byte, *net.UDPAddr, bool) {
 	if n <= 0 {
 		return nil, nil, false
 	}
-	buf := make([]byte, n)
+	// use buffer pool to reduce GC pressure
+	buf := s.getBuf(n)
 	copy(buf, s.recvBuf[:n])
 
 	return buf, addr, true
@@ -170,24 +206,27 @@ func (s *KcpServer) TickIncoming() {
 			break
 		}
 		s.processMessage(seg, remote)
+		// return buffer to pool after processing
+		s.putBuf(seg)
 	}
-	// tick all connections
+	// tick all connections - reuse slice to avoid allocation
 	s.mu.RLock()
-	connections := make([]*KcpServerConnection, 0, len(s.connections))
+	// reuse existing slice, reset length to 0
+	s.connectionSlice = s.connectionSlice[:0]
 	for _, c := range s.connections {
-		connections = append(connections, c)
+		s.connectionSlice = append(s.connectionSlice, c)
 	}
 	s.mu.RUnlock()
 
-	for _, c := range connections {
+	for _, c := range s.connectionSlice {
 		c.TickIncoming()
 	}
-	// remove disconnected
+	// remove disconnected - clear map instead of reallocating
 	s.mu.Lock()
 	for id := range s.toRemove {
 		delete(s.connections, id)
+		delete(s.toRemove, id) // clear the key instead of reallocating map
 	}
-	s.toRemove = make(map[int]struct{})
 	s.mu.Unlock()
 }
 
@@ -277,8 +316,13 @@ func (s *KcpServer) createConnection(connectionId int, remote *net.UDPAddr) *Kcp
 	onDisconnected := func() {
 		Log.Debug("[KCP] Server: OnDisconnected connectionId: %d", connectionId)
 		// schedule removal
+		// schedule removal and return connection to pool
 		s.mu.Lock()
 		s.toRemove[connectionId] = struct{}{}
+		if conn, exists := s.connections[connectionId]; exists {
+			// return connection to pool for reuse
+			s.connectionPool.Put(conn)
+		}
 		s.mu.Unlock()
 
 		if s.onDisconnected != nil {
@@ -304,5 +348,6 @@ func (s *KcpServer) createConnection(connectionId int, remote *net.UDPAddr) *Kcp
 			Log.Error("[KCP] Server: sendTo failed: %v", e)
 		}
 	}
-	return NewKcpServerConnection(onConnected, onData, onDisconnected, onError, onRawSend, s.config, cookie, remote)
+	// use connection pool to get reusable connection
+	return s.connectionPool.Get(onConnected, onData, onDisconnected, onError, onRawSend, cookie, remote)
 }

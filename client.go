@@ -29,6 +29,7 @@ type KcpClient struct {
 
 	// buffers
 	rawReceiveBuffer []byte
+	bufferPool       Pool[[]byte]
 
 	// callbacks
 	onConnected    func()
@@ -46,6 +47,7 @@ func NewKcpClient(onConnected func(), onData func([]byte, KcpChannel), onDisconn
 		onDisconnected:   onDisconnected,
 		onError:          onError,
 		rawReceiveBuffer: make([]byte, config.Mtu),
+		bufferPool:       New(func() []byte { return make([]byte, 0, config.Mtu) }),
 	}
 	// client has no cookie yet. it will be assigned from first server message.
 	c.peer = NewKcpPeer(0, 0, config, c)
@@ -192,7 +194,16 @@ func (c *KcpClient) RawReceive() ([]byte, bool) {
 	if n <= 0 {
 		return nil, false
 	}
-	buf := make([]byte, n)
+	
+	// 使用对象池获取缓冲区，避免频繁分配
+	buf := c.bufferPool.Get()
+	if cap(buf) < n {
+		// 如果池中的缓冲区容量不足，创建新的缓冲区
+		buf = make([]byte, n)
+	} else {
+		// 重新切片到正确的长度
+		buf = buf[:n]
+	}
 	copy(buf, c.rawReceiveBuffer[:n])
 
 	return buf, true
@@ -236,6 +247,15 @@ func (c *KcpClient) RawInput(segment []byte) {
 	}
 }
 
+// PutBuffer returns a buffer to the pool for reuse.
+func (c *KcpClient) PutBuffer(buf []byte) {
+	if cap(buf) > 0 {
+		// 重置长度为0，但保持容量
+		buf = buf[:0]
+		c.bufferPool.Put(buf)
+	}
+}
+
 // TickIncoming polls socket and then lets peer process incoming.
 func (c *KcpClient) TickIncoming() {
 	if c.active {
@@ -247,6 +267,8 @@ func (c *KcpClient) TickIncoming() {
 				break
 			}
 			c.RawInput(seg)
+			// 处理完数据后归还缓冲区到池中
+			c.PutBuffer(seg)
 		}
 	}
 	if c.active {

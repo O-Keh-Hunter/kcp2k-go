@@ -17,6 +17,41 @@ import (
 	kcp2k "github.com/O-Keh-Hunter/kcp2k-go"
 )
 
+// 预分配的固定字符串常量，避免GC
+var (
+	// 可靠数据包常量
+	reliablePackets = [][]byte{
+		[]byte("PACKET_RELIABLE_TEST_DATA_001"),
+		[]byte("PACKET_RELIABLE_TEST_DATA_002"),
+		[]byte("PACKET_RELIABLE_TEST_DATA_003"),
+		[]byte("PACKET_RELIABLE_TEST_DATA_004"),
+		[]byte("PACKET_RELIABLE_TEST_DATA_005"),
+	}
+	// 不可靠数据包常量
+	unreliablePackets = [][]byte{
+		[]byte("UPACKET_UNRELIABLE_TEST_DATA_001"),
+		[]byte("UPACKET_UNRELIABLE_TEST_DATA_002"),
+		[]byte("UPACKET_UNRELIABLE_TEST_DATA_003"),
+		[]byte("UPACKET_UNRELIABLE_TEST_DATA_004"),
+		[]byte("UPACKET_UNRELIABLE_TEST_DATA_005"),
+	}
+	// 对应的ECHO响应常量
+	echoReliablePackets = [][]byte{
+		[]byte("ECHO_RELIABLE_TEST_DATA_001"),
+		[]byte("ECHO_RELIABLE_TEST_DATA_002"),
+		[]byte("ECHO_RELIABLE_TEST_DATA_003"),
+		[]byte("ECHO_RELIABLE_TEST_DATA_004"),
+		[]byte("ECHO_RELIABLE_TEST_DATA_005"),
+	}
+	echoUnreliablePackets = [][]byte{
+		[]byte("ECHO_UNRELIABLE_TEST_DATA_001"),
+		[]byte("ECHO_UNRELIABLE_TEST_DATA_002"),
+		[]byte("ECHO_UNRELIABLE_TEST_DATA_003"),
+		[]byte("ECHO_UNRELIABLE_TEST_DATA_004"),
+		[]byte("ECHO_UNRELIABLE_TEST_DATA_005"),
+	}
+)
+
 type Client struct {
 	ID             int
 	ServerID       int
@@ -113,18 +148,29 @@ func (c *Client) onData(data []byte, channel kcp2k.KcpChannel) {
 	c.Stats.PacketsReceived++
 	c.Stats.BytesReceived += int64(len(data))
 
-	// 尝试解析响应数据包以计算延迟
-	dataStr := string(data)
-	if strings.HasPrefix(dataStr, "ECHO_") {
-		// 解析数据包ID: ECHO_clientID_serverID_packetID_timestamp
-		parts := strings.Split(dataStr, "_")
-		if len(parts) >= 4 {
-			if packetID, err := strconv.Atoi(parts[3]); err == nil {
-				if pending, exists := c.pendingPackets[packetID]; exists {
-					// 计算真实的网络往返延迟
+	// 使用字节比较避免字符串转换，减少GC
+	// 检查是否是ECHO响应包
+	if len(data) >= 4 && data[0] == 'E' && data[1] == 'C' && data[2] == 'H' && data[3] == 'O' {
+		// 简化延迟计算，使用固定的包ID模式
+		// 由于使用固定常量，我们可以通过包内容来识别对应的发送时间
+		for i, echoPacket := range echoReliablePackets {
+			if len(data) == len(echoPacket) && string(data) == string(echoPacket) {
+				// 找到对应的可靠包，使用包索引作为简化的ID
+				if pending, exists := c.pendingPackets[i+1]; exists {
 					c.Stats.Latency = time.Since(pending.SentTime)
-					delete(c.pendingPackets, packetID)
+					delete(c.pendingPackets, i+1)
 				}
+				break
+			}
+		}
+		for i, echoPacket := range echoUnreliablePackets {
+			if len(data) == len(echoPacket) && string(data) == string(echoPacket) {
+				// 找到对应的不可靠包，使用包索引作为简化的ID
+				if pending, exists := c.pendingPackets[i+100]; exists {
+					c.Stats.Latency = time.Since(pending.SentTime)
+					delete(c.pendingPackets, i+100)
+				}
+				break
 			}
 		}
 	}
@@ -171,44 +217,39 @@ func (c *Client) SendPackets(fps int) {
 				continue
 			}
 
-			c.mu.Lock()
-			c.packetID++
-			currentPacketID := c.packetID
-			c.mu.Unlock()
-
 			// 随机选择发送可靠或不可靠数据包
 			isReliable := rand.IntN(2) == 0
 			sendTime := time.Now()
 
 			if isReliable {
-				// 发送可靠数据包 (记录延迟追踪)
-				relPacket := fmt.Sprintf("PACKET_%d_%d_%d_%s",
-					c.ID, c.ServerID, currentPacketID, time.Now().Format("15:04:05.000"))
+				// 发送可靠数据包，使用预分配的常量避免GC
+				packetIndex := rand.IntN(len(reliablePackets))
+				packetData := reliablePackets[packetIndex]
 
-				c.KcpClient.Send([]byte(relPacket), kcp2k.KcpReliable)
+				c.KcpClient.Send(packetData, kcp2k.KcpReliable)
 
 				c.mu.Lock()
 				c.Stats.PacketsSent++
-				c.Stats.BytesSent += int64(len(relPacket))
-				// 记录待响应的数据包用于延迟计算
-				c.pendingPackets[currentPacketID] = &PendingPacket{
-					ID:       currentPacketID,
+				c.Stats.BytesSent += int64(len(packetData))
+				// 使用包索引+1作为简化的ID用于延迟计算
+				c.pendingPackets[packetIndex+1] = &PendingPacket{
+					ID:       packetIndex + 1,
 					SentTime: sendTime,
 				}
 				c.mu.Unlock()
 			} else {
-				// 发送不可靠数据包 (无延迟追踪)
-				unrelPacket := fmt.Sprintf("UPACKET_%d_%d_%d_%s",
-					c.ID, c.ServerID, currentPacketID, time.Now().Format("15:04:05.000"))
+				// 发送不可靠数据包，使用预分配的常量避免GC
+				packetIndex := rand.IntN(len(unreliablePackets))
+				packetData := unreliablePackets[packetIndex]
 
-				c.KcpClient.Send([]byte(unrelPacket), kcp2k.KcpUnreliable)
+				c.KcpClient.Send(packetData, kcp2k.KcpUnreliable)
 
 				c.mu.Lock()
 				c.Stats.PacketsSent++
-				c.Stats.BytesSent += int64(len(unrelPacket))
-				// 记录待响应的数据包用于延迟计算
-				c.pendingPackets[currentPacketID] = &PendingPacket{
-					ID:       currentPacketID,
+				c.Stats.BytesSent += int64(len(packetData))
+				// 使用包索引+100作为简化的ID用于延迟计算
+				c.pendingPackets[packetIndex+100] = &PendingPacket{
+					ID:       packetIndex + 100,
 					SentTime: sendTime,
 				}
 				c.mu.Unlock()

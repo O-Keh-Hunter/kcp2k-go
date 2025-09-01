@@ -26,12 +26,18 @@ go build -o tests/stress_test/stress_test ./tests/stress_test
 echo "开始完整规模测试..."
 echo "注意: 这可能需要大量系统资源，请确保系统有足够的内存和CPU"
 echo "按 Ctrl+C 停止测试"
+echo "启用GC检测以分析内存分配..."
 echo ""
+
+# 启用GC检测和内存分析
+export GODEBUG=gctrace=1,gcpacertrace=1
+export GOMAXPROCS=$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo '4')
 
 ./tests/stress_test/stress_test \
     -servers 300 \
     -clients-per-server 10 \
     -fps 15 \
-    -start-port 10000
+    -start-port 10000 \
+    2>&1 | tee gc_analysis.log
 
 echo "测试完成"

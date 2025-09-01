@@ -14,6 +14,41 @@ import (
 	kcp2k "github.com/O-Keh-Hunter/kcp2k-go"
 )
 
+// 预分配的固定字符串常量，避免GC
+var (
+	// 可靠数据包常量
+	reliablePackets = [][]byte{
+		[]byte("PACKET_RELIABLE_TEST_DATA_001"),
+		[]byte("PACKET_RELIABLE_TEST_DATA_002"),
+		[]byte("PACKET_RELIABLE_TEST_DATA_003"),
+		[]byte("PACKET_RELIABLE_TEST_DATA_004"),
+		[]byte("PACKET_RELIABLE_TEST_DATA_005"),
+	}
+	// 不可靠数据包常量
+	unreliablePackets = [][]byte{
+		[]byte("UPACKET_UNRELIABLE_TEST_DATA_001"),
+		[]byte("UPACKET_UNRELIABLE_TEST_DATA_002"),
+		[]byte("UPACKET_UNRELIABLE_TEST_DATA_003"),
+		[]byte("UPACKET_UNRELIABLE_TEST_DATA_004"),
+		[]byte("UPACKET_UNRELIABLE_TEST_DATA_005"),
+	}
+	// 对应的ECHO响应常量
+	echoReliablePackets = [][]byte{
+		[]byte("ECHO_RELIABLE_TEST_DATA_001"),
+		[]byte("ECHO_RELIABLE_TEST_DATA_002"),
+		[]byte("ECHO_RELIABLE_TEST_DATA_003"),
+		[]byte("ECHO_RELIABLE_TEST_DATA_004"),
+		[]byte("ECHO_RELIABLE_TEST_DATA_005"),
+	}
+	echoUnreliablePackets = [][]byte{
+		[]byte("ECHO_UNRELIABLE_TEST_DATA_001"),
+		[]byte("ECHO_UNRELIABLE_TEST_DATA_002"),
+		[]byte("ECHO_UNRELIABLE_TEST_DATA_003"),
+		[]byte("ECHO_UNRELIABLE_TEST_DATA_004"),
+		[]byte("ECHO_UNRELIABLE_TEST_DATA_005"),
+	}
+)
+
 type Server struct {
 	ID          int
 	KcpServer   *kcp2k.KcpServer
@@ -90,19 +125,31 @@ func (s *Server) onData(connectionId int, data []byte, channel kcp2k.KcpChannel)
 	s.Stats.BytesReceived += int64(len(data))
 	s.mu.Unlock()
 
-	// 处理客户端数据包并生成回显响应
-	dataStr := string(data)
+	// 使用字节比较和预分配常量，避免字符串转换和拼接，减少GC
 	var response []byte
 
-	// 如果是测试数据包，转换为ECHO格式
-	if len(dataStr) > 7 && dataStr[:7] == "PACKET_" {
-		// 将 PACKET_ 替换为 ECHO_ 以便客户端识别
-		response = []byte("ECHO_" + dataStr[7:])
-	} else if len(dataStr) > 8 && dataStr[:8] == "UPACKET_" {
-		// 将 UPACKET_ 替换为 ECHO_ 以便客户端识别
-		response = []byte("ECHO_" + dataStr[8:])
-	} else {
-		// 对于其他数据，直接回显
+	// 检查是否是可靠数据包
+	for i, reliablePacket := range reliablePackets {
+		if len(data) == len(reliablePacket) && string(data) == string(reliablePacket) {
+			// 使用对应的预分配ECHO响应
+			response = echoReliablePackets[i]
+			break
+		}
+	}
+
+	// 如果不是可靠包，检查是否是不可靠数据包
+	if response == nil {
+		for i, unreliablePacket := range unreliablePackets {
+			if len(data) == len(unreliablePacket) && string(data) == string(unreliablePacket) {
+				// 使用对应的预分配ECHO响应
+				response = echoUnreliablePackets[i]
+				break
+			}
+		}
+	}
+
+	// 如果都不匹配，直接回显原数据（向后兼容）
+	if response == nil {
 		response = data
 	}
 

@@ -60,3 +60,77 @@ func TestGenerateCookie(t *testing.T) {
 		t.Errorf("Two generated cookies should be different, both got %d", cookie1)
 	}
 }
+
+// BenchmarkResolveHostname 基准测试域名解析函数
+func BenchmarkResolveHostname(b *testing.B) {
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_, _ = ResolveHostname("localhost")
+	}
+}
+
+// BenchmarkConfigureSocketBuffers 基准测试套接字缓冲区配置函数
+func BenchmarkConfigureSocketBuffers(b *testing.B) {
+	// 创建UDP连接用于测试
+	addr, _ := net.ResolveUDPAddr("udp", ":0")
+	conn, err := net.ListenUDP("udp", addr)
+	if err != nil {
+		b.Fatal(err)
+	}
+	defer conn.Close()
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_ = ConfigureSocketBuffers(conn, 1024*1024, 1024*1024)
+	}
+}
+
+// BenchmarkConnectionHash 基准测试连接哈希函数
+func BenchmarkConnectionHash(b *testing.B) {
+	endPoint := &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 7777}
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_ = ConnectionHash(endPoint)
+	}
+}
+
+// BenchmarkGenerateCookie 基准测试Cookie生成函数
+func BenchmarkGenerateCookie(b *testing.B) {
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_ = GenerateCookie()
+	}
+}
+
+// BenchmarkConnectionHashDifferentTypes 基准测试不同类型地址的哈希函数
+func BenchmarkConnectionHashDifferentTypes(b *testing.B) {
+	udpAddr := &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 7777}
+	tcpAddr := &net.TCPAddr{IP: net.ParseIP("127.0.0.1"), Port: 7777}
+
+	b.Run("UDP", func(b *testing.B) {
+		for i := 0; i < b.N; i++ {
+			_ = ConnectionHash(udpAddr)
+		}
+	})
+
+	b.Run("TCP", func(b *testing.B) {
+		for i := 0; i < b.N; i++ {
+			_ = ConnectionHash(tcpAddr)
+		}
+	})
+
+	b.Run("Nil", func(b *testing.B) {
+		for i := 0; i < b.N; i++ {
+			_ = ConnectionHash(nil)
+		}
+	})
+}
+
+// BenchmarkGenerateCookieConcurrent 基准测试并发Cookie生成
+func BenchmarkGenerateCookieConcurrent(b *testing.B) {
+	b.RunParallel(func(pb *testing.PB) {
+		for pb.Next() {
+			_ = GenerateCookie()
+		}
+	})
+}

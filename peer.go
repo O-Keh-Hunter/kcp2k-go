@@ -75,6 +75,12 @@ type KcpPeer struct {
 	// 新增：RTT 属性（对应 C# 版的 rttInMilliseconds）
 	rtt uint32
 
+	// 缓冲池用于减少GC压力
+	bufferPool Pool[[]byte]
+	
+	// 外部缓冲区池引用，用于大型缓冲区复用
+	externalBufferPool *BufferPool
+
 	lock sync.Mutex
 }
 
@@ -111,6 +117,18 @@ func NewKcpPeer(conv uint32, cookie uint32, config KcpConfig, handler KcpPeerEve
 	return p
 }
 
+// NewKcpPeerWithBufferPool 创建带缓冲区池的KcpPeer
+func NewKcpPeerWithBufferPool(conv uint32, cookie uint32, config KcpConfig, handler KcpPeerEventHandler, bufferPool *BufferPool) *KcpPeer {
+	p := &KcpPeer{}
+	p.externalBufferPool = bufferPool
+	// initialize state from config
+	p.Reset(config)
+	// set cookie after reset so it's not overwritten
+	p.Cookie = cookie
+	p.Handler = handler
+	return p
+}
+
 // Reset initializes peer state from config, similar to C# KcpPeer.Reset
 func (p *KcpPeer) Reset(config KcpConfig) {
 	// reset variable state
@@ -124,6 +142,11 @@ func (p *KcpPeer) Reset(config KcpConfig) {
 	// 重置 RTT
 	p.rtt = 0
 
+	// 初始化缓冲池
+	p.bufferPool = New(func() []byte {
+		return make([]byte, 0, config.Mtu)
+	})
+
 	// precompute max message sizes based on mtu and wnd
 	p.ReliableMax = ReliableMaxMessageSize(config.Mtu, config.ReceiveWindowSize)
 	p.UnreliableMax = UnreliableMaxMessageSize(config.Mtu)
@@ -132,16 +155,36 @@ func (p *KcpPeer) Reset(config KcpConfig) {
 	}
 
 	// allocate buffers after window size is set
-	p.kcpMessageBuffer = make([]byte, 1+p.ReliableMax)
-	p.kcpSendBuffer = make([]byte, 1+p.ReliableMax)
-	p.rawSendBuffer = make([]byte, config.Mtu)
+	// use external buffer pool if available, otherwise allocate directly
+	if p.externalBufferPool != nil {
+		p.kcpMessageBuffer = p.externalBufferPool.GetMessageBuffer()
+		p.kcpSendBuffer = p.externalBufferPool.GetSendBuffer()
+		p.rawSendBuffer = p.externalBufferPool.GetRawBuffer()
+	} else {
+		p.kcpMessageBuffer = make([]byte, 1+p.ReliableMax)
+		p.kcpSendBuffer = make([]byte, 1+p.ReliableMax)
+		p.rawSendBuffer = make([]byte, config.Mtu)
+	}
 
 	// 创建新的 KCP 实例，配置输出回调
 	// 对应 C# 版的 kcp = new Kcp(0, RawSendReliable)
 	p.Kcp = kcp.NewKCP(0, func(buf []byte, size int) {
 		// 这是 KCP 的输出回调，用于发送可靠消息
-		// 使用独立缓冲区避免与不可靠发送共享缓冲导致数据竞争
-		out := make([]byte, size+5)
+		// 使用池化缓冲区避免内存分配
+		out := p.bufferPool.Get()
+		defer func() {
+			out = out[:0]         // 重置长度
+			p.bufferPool.Put(out) // 归还缓冲区
+		}()
+
+		// 确保缓冲区容量足够
+		requiredSize := size + 5
+		if cap(out) < requiredSize {
+			out = make([]byte, requiredSize)
+		} else {
+			out = out[:requiredSize]
+		}
+
 		// 写入通道头部
 		out[0] = byte(KcpReliable)
 		// 写入握手 cookie 以防止 UDP 欺骗
@@ -257,16 +300,17 @@ func (p *KcpPeer) GetRTT() uint32 {
 
 // ReceiveNextReliable 从 kcp 读取下一个可靠消息类型和内容
 // 为了避免缓冲，不可靠消息直接调用 OnData
-func (p *KcpPeer) ReceiveNextReliable() (KcpHeaderReliable, []byte, bool) {
+// 返回的 []byte 需要调用方负责回收到缓冲池
+func (p *KcpPeer) ReceiveNextReliable() (KcpHeaderReliable, []byte, func(), bool) {
 	if p.Kcp == nil {
-		return KcpHeaderPing, nil, false
+		return KcpHeaderPing, nil, nil, false
 	}
 
 	p.lock.Lock()
 	msgSize := p.Kcp.PeekSize()
 	if msgSize <= 0 {
 		p.lock.Unlock()
-		return KcpHeaderPing, nil, false
+		return KcpHeaderPing, nil, nil, false
 	}
 
 	// 只允许接收不超过缓冲区大小的消息
@@ -281,7 +325,7 @@ func (p *KcpPeer) ReceiveNextReliable() (KcpHeaderReliable, []byte, bool) {
 		}
 		p.lock.Unlock()
 		p.Disconnect()
-		return KcpHeaderPing, nil, false
+		return KcpHeaderPing, nil, nil, false
 	}
 
 	// 从 kcp 接收
@@ -294,7 +338,7 @@ func (p *KcpPeer) ReceiveNextReliable() (KcpHeaderReliable, []byte, bool) {
 		}
 		p.lock.Unlock()
 		p.Disconnect()
-		return KcpHeaderPing, nil, false
+		return KcpHeaderPing, nil, nil, false
 	}
 
 	// 安全提取头部，攻击者可能发送超出枚举范围的值
@@ -307,19 +351,34 @@ func (p *KcpPeer) ReceiveNextReliable() (KcpHeaderReliable, []byte, bool) {
 		}
 		p.lock.Unlock()
 		p.Disconnect()
-		return KcpHeaderPing, nil, false
+		return KcpHeaderPing, nil, nil, false
 	}
 	p.lock.Unlock()
 
 	// 提取内容（不含头部）
-	message := make([]byte, msgSize-1)
+	// 使用缓冲池避免内存分配
+	message := p.bufferPool.Get()
+	messageSize := msgSize - 1
+
+	// 确保缓冲区容量足够
+	if cap(message) < messageSize {
+		message = make([]byte, messageSize)
+	} else {
+		message = message[:messageSize]
+	}
 	copy(message, p.kcpMessageBuffer[1:msgSize])
+
+	// 创建回收函数
+	recycleFunc := func() {
+		message = message[:0]     // 重置长度
+		p.bufferPool.Put(message) // 归还缓冲区
+	}
 
 	p.lock.Lock()
 	p.lastReceiveTime = p.Time()
 	p.lock.Unlock()
 
-	return header, message, true
+	return header, message, recycleFunc, true
 }
 
 // OnRawInputReliable 将消息输入到 kcp，但跳过通道字节
@@ -421,7 +480,19 @@ func (p *KcpPeer) SendDisconnect() {
 // SendPing 发送 ping
 func (p *KcpPeer) SendPing() {
 	// 发送 ping 时，包含本地时间戳，这样我们就可以从 pong 计算 RTT
-	pingData := make([]byte, 4)
+	// 使用缓冲池避免内存分配
+	pingData := p.bufferPool.Get()
+	defer func() {
+		pingData = pingData[:0]    // 重置长度
+		p.bufferPool.Put(pingData) // 归还缓冲区
+	}()
+
+	// 确保缓冲区容量足够
+	if cap(pingData) < 4 {
+		pingData = make([]byte, 4)
+	} else {
+		pingData = pingData[:4]
+	}
 	Encode32U(pingData, 0, p.Time())
 
 	// 发送 ping 时重置超时计时器
@@ -435,7 +506,19 @@ func (p *KcpPeer) SendPing() {
 // SendPong 发送 pong
 func (p *KcpPeer) SendPong(pingTimestamp uint32) {
 	// 发送 pong 时，包含原始 ping 时间戳
-	pongData := make([]byte, 4)
+	// 使用缓冲池避免内存分配
+	pongData := p.bufferPool.Get()
+	defer func() {
+		pongData = pongData[:0]    // 重置长度
+		p.bufferPool.Put(pongData) // 归还缓冲区
+	}()
+
+	// 确保缓冲区容量足够
+	if cap(pongData) < 4 {
+		pongData = make([]byte, 4)
+	} else {
+		pongData = pongData[:4]
+	}
 	Encode32U(pongData, 0, pingTimestamp)
 
 	// 发送 pong 时重置超时计时器
@@ -494,9 +577,23 @@ func (p *KcpPeer) SendUnreliable(header KcpHeaderUnreliable, content []byte) {
 		return
 	}
 
+	// 从缓冲池获取缓冲区
+	out := p.bufferPool.Get()
+	defer func() {
+		out = out[:0]         // 重置长度
+		p.bufferPool.Put(out) // 归还缓冲区
+	}()
+
+	// 确保缓冲区容量足够
+	requiredSize := 6 + len(content)
+	if cap(out) < requiredSize {
+		out = make([]byte, requiredSize)
+	} else {
+		out = out[:requiredSize]
+	}
+
 	// 写入通道头部
 	// 从 0 开始，1 字节
-	out := make([]byte, 6+len(content))
 	out[0] = byte(KcpUnreliable)
 
 	// 写入握手 cookie 以防止 UDP 欺骗
@@ -681,7 +778,8 @@ func (p *KcpPeer) TickIncoming_Connected(time uint32) {
 	p.HandleChoked()
 
 	// 收到任何可靠的 kcp 消息？
-	header, message, received := p.ReceiveNextReliable()
+	header, message, recycle, received := p.ReceiveNextReliable()
+
 	if received {
 		// 消息类型 FSM，没有默认值，所以我们永远不会错过一个案例
 		switch header {
@@ -709,6 +807,10 @@ func (p *KcpPeer) TickIncoming_Connected(time uint32) {
 			p.Disconnect()
 		}
 	}
+
+	if recycle != nil {
+		defer recycle() // 确保缓冲区被回收
+	}
 }
 
 // TickIncoming_Authenticated 处理认证状态下的入站消息
@@ -721,7 +823,7 @@ func (p *KcpPeer) TickIncoming_Authenticated(time uint32) {
 
 	// 处理所有收到的消息
 	for {
-		header, message, received := p.ReceiveNextReliable()
+		header, message, recycle, received := p.ReceiveNextReliable()
 		if !received {
 			break
 		}
@@ -769,6 +871,11 @@ func (p *KcpPeer) TickIncoming_Authenticated(time uint32) {
 				}
 			}
 		}
+
+		// 确保缓冲区被回收
+		if recycle != nil {
+			recycle()
+		}
 	}
 }
 
@@ -806,5 +913,23 @@ func (p *KcpPeer) TickOutgoing() {
 		}
 	case KcpDisconnected:
 		// 断开连接时什么都不做
+	}
+}
+
+// ReleaseBuffers 释放缓冲区资源，归还到池中
+func (p *KcpPeer) ReleaseBuffers() {
+	if p.externalBufferPool != nil {
+		if p.kcpMessageBuffer != nil {
+			p.externalBufferPool.PutMessageBuffer(p.kcpMessageBuffer)
+			p.kcpMessageBuffer = nil
+		}
+		if p.kcpSendBuffer != nil {
+			p.externalBufferPool.PutSendBuffer(p.kcpSendBuffer)
+			p.kcpSendBuffer = nil
+		}
+		if p.rawSendBuffer != nil {
+			p.externalBufferPool.PutRawBuffer(p.rawSendBuffer)
+			p.rawSendBuffer = nil
+		}
 	}
 }

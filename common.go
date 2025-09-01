@@ -7,6 +7,11 @@ import (
 	"net"
 )
 
+// 全局缓冲池用于GenerateCookie函数
+var cookieBufferPool = New(func() []byte {
+	return make([]byte, 4)
+})
+
 // ResolveHostname resolves hostname to IP addresses
 // Returns the resolved addresses and a boolean indicating success
 func ResolveHostname(hostname string) ([]net.IP, bool) {
@@ -78,7 +83,14 @@ func ConnectionHash(addr net.Addr) int {
 // Cookies need to be generated with a secure random generator.
 // We don't want them to be deterministic / predictable.
 func GenerateCookie() uint32 {
-	buf := make([]byte, 4)
+	buf := cookieBufferPool.Get()
+	defer func() {
+		// 重置缓冲区并归还到池中
+		// 使用clear()函数更高效地清零缓冲区
+		clear(buf)
+		cookieBufferPool.Put(buf)
+	}()
+	
 	_, err := rand.Read(buf)
 	if err != nil {
 		// Fallback to a simple method if crypto/rand fails
