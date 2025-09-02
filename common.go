@@ -90,7 +90,7 @@ func GenerateCookie() uint32 {
 		clear(buf)
 		cookieBufferPool.Put(buf)
 	}()
-	
+
 	_, err := rand.Read(buf)
 	if err != nil {
 		// Fallback to a simple method if crypto/rand fails

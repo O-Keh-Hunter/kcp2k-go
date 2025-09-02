@@ -194,7 +194,7 @@ func (c *KcpClient) RawReceive() ([]byte, bool) {
 	if n <= 0 {
 		return nil, false
 	}
-	
+
 	// 使用对象池获取缓冲区，避免频繁分配
 	buf := c.bufferPool.Get()
 	if cap(buf) < n {

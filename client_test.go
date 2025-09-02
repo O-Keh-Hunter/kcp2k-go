@@ -166,16 +166,11 @@ func BenchmarkTickWithConnection(b *testing.B) {
 		client.bufferPool.Put(buf)
 	}
 
-	// hello := []byte("hello")
-
 	// 强制垃圾回收
 	runtime.GC()
 	b.ResetTimer()
 
 	for i := 0; i < b.N; i++ {
-		// client.Send(hello, KcpReliable)
-		// client.Send(hello, KcpUnreliable)
-
 		client.Tick()
 		// 也需要tick服务器以保持连接活跃
 		server.Tick()

@@ -77,7 +77,7 @@ type KcpPeer struct {
 
 	// 缓冲池用于减少GC压力
 	bufferPool Pool[[]byte]
-	
+
 	// 外部缓冲区池引用，用于大型缓冲区复用
 	externalBufferPool *BufferPool
 

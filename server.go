@@ -33,7 +33,7 @@ type KcpServer struct {
 
 	// optimization: reuse connection slice to avoid allocations
 	connectionSlice []*KcpServerConnection
-	
+
 	// object pools for memory optimization
 	connectionPool *ConnectionPool
 	bufferPoolOpt  *BufferPool
@@ -53,7 +53,7 @@ func NewKcpServer(onConnected func(int), onData func(int, []byte, KcpChannel), o
 		bufferPoolOpt:  NewBufferPool(config),
 	}
 	s.connectionPool = NewConnectionPool(config, s.bufferPoolOpt)
-	
+
 	// initialize buffer pool
 	s.bufferPool = New(func() []byte {
 		return make([]byte, config.Mtu)
