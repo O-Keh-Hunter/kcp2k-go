@@ -130,6 +130,46 @@ func (s *KcpServer) Send(connectionId int, data []byte, channel KcpChannel) {
 	}
 }
 
+func (s *KcpServer) GetSendQueueCount(connectionId int) int {
+	s.mu.RLock()
+	c, ok := s.connections[connectionId]
+	s.mu.RUnlock()
+	if ok {
+		return c.peer.SendQueueCount()
+	}
+	return 0
+}
+
+func (s *KcpServer) GetSendBufferCount(connectionId int) int {
+	s.mu.RLock()
+	c, ok := s.connections[connectionId]
+	s.mu.RUnlock()
+	if ok {
+		return c.peer.SendBufferCount()
+	}
+	return 0
+}
+
+func (s *KcpServer) GetReceiveQueueCount(connectionId int) int {
+	s.mu.RLock()
+	c, ok := s.connections[connectionId]
+	s.mu.RUnlock()
+	if ok {
+		return c.peer.ReceiveQueueCount()
+	}
+	return 0
+}
+
+func (s *KcpServer) GetReceiveBufferCount(connectionId int) int {
+	s.mu.RLock()
+	c, ok := s.connections[connectionId]
+	s.mu.RUnlock()
+	if ok {
+		return c.peer.ReceiveBufferCount()
+	}
+	return 0
+}
+
 func (s *KcpServer) Disconnect(connectionId int) {
 	s.mu.RLock()
 	c, ok := s.connections[connectionId]

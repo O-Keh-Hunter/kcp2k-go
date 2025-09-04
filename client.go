@@ -302,3 +302,19 @@ func (c *KcpClient) GetRTT() uint32 {
 func (c *KcpClient) Disconnect() {
 	c.peer.Disconnect()
 }
+
+func (c *KcpClient) GetSendQueueCount(connectionId int) int {
+	return c.peer.SendQueueCount()
+}
+
+func (c *KcpClient) GetSendBufferCount(connectionId int) int {
+	return c.peer.SendBufferCount()
+}
+
+func (c *KcpClient) GetReceiveQueueCount(connectionId int) int {
+	return c.peer.ReceiveQueueCount()
+}
+
+func (c *KcpClient) GetReceiveBufferCount(connectionId int) int {
+	return c.peer.ReceiveBufferCount()
+}
