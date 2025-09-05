@@ -70,13 +70,27 @@ type ServerStats struct {
 	BytesSent       int64
 	BytesReceived   int64
 	StartTime       time.Time
+	// Per-second statistics
+	LastReportTime    time.Time
+	LastPacketsSent   int64
+	LastPacketsReceived int64
+	LastBytesSent     int64
+	LastBytesReceived int64
+	PacketsPerSecSent int64
+	PacketsPerSecReceived int64
+	BytesPerSecSent   float64 // MB/s
+	BytesPerSecReceived float64 // MB/s
 }
 
 func NewServer(id, port int) *Server {
+	now := time.Now()
 	return &Server{
 		ID:    id,
 		Port:  port,
-		Stats: &ServerStats{StartTime: time.Now()},
+		Stats: &ServerStats{
+			StartTime: now,
+			LastReportTime: now,
+		},
 	}
 }
 
@@ -197,6 +211,36 @@ func (s *Server) GetStats() ServerStats {
 	return *s.Stats
 }
 
+// Calculate per-second statistics
+func (s *Server) UpdatePerSecondStats() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	
+	now := time.Now()
+	timeDiff := now.Sub(s.Stats.LastReportTime).Seconds()
+	
+	if timeDiff > 0 {
+		// Calculate packets per second
+		packetsSentDiff := s.Stats.PacketsSent - s.Stats.LastPacketsSent
+		packetsReceivedDiff := s.Stats.PacketsReceived - s.Stats.LastPacketsReceived
+		s.Stats.PacketsPerSecSent = int64(float64(packetsSentDiff) / timeDiff)
+		s.Stats.PacketsPerSecReceived = int64(float64(packetsReceivedDiff) / timeDiff)
+		
+		// Calculate bytes per second (MB/s)
+		bytesSentDiff := s.Stats.BytesSent - s.Stats.LastBytesSent
+		bytesReceivedDiff := s.Stats.BytesReceived - s.Stats.LastBytesReceived
+		s.Stats.BytesPerSecSent = float64(bytesSentDiff) / timeDiff / (1024 * 1024)
+		s.Stats.BytesPerSecReceived = float64(bytesReceivedDiff) / timeDiff / (1024 * 1024)
+		
+		// Update last values
+		s.Stats.LastReportTime = now
+		s.Stats.LastPacketsSent = s.Stats.PacketsSent
+		s.Stats.LastPacketsReceived = s.Stats.PacketsReceived
+		s.Stats.LastBytesSent = s.Stats.BytesSent
+		s.Stats.LastBytesReceived = s.Stats.BytesReceived
+	}
+}
+
 func main() {
 	var (
 		startPort      = flag.Int("start-port", 10000, "Starting port for servers")
@@ -270,6 +314,13 @@ func main() {
 func reportStats(servers []*Server) {
 	var totalConnections, totalPacketsSent, totalPacketsReceived int64
 	var totalBytesSent, totalBytesReceived int64
+	var totalPacketsPerSecSent, totalPacketsPerSecReceived int64
+	var totalBytesPerSecSent, totalBytesPerSecReceived float64
+
+	// Update per-second stats for all servers first
+	for _, server := range servers {
+		server.UpdatePerSecondStats()
+	}
 
 	for _, server := range servers {
 		stats := server.GetStats()
@@ -278,13 +329,22 @@ func reportStats(servers []*Server) {
 		totalPacketsReceived += stats.PacketsReceived
 		totalBytesSent += stats.BytesSent
 		totalBytesReceived += stats.BytesReceived
+		totalPacketsPerSecSent += stats.PacketsPerSecSent
+		totalPacketsPerSecReceived += stats.PacketsPerSecReceived
+		totalBytesPerSecSent += stats.BytesPerSecSent
+		totalBytesPerSecReceived += stats.BytesPerSecReceived
 	}
 
-	log.Printf("=== STATS REPORT ===")
+	log.Printf("=== SERVER STATS REPORT ===")
 	log.Printf("Total Connections: %d", totalConnections)
 	log.Printf("Total Packets Sent: %d", totalPacketsSent)
 	log.Printf("Total Packets Received: %d", totalPacketsReceived)
 	log.Printf("Total Bytes Sent: %d", totalBytesSent)
 	log.Printf("Total Bytes Received: %d", totalBytesReceived)
-	log.Printf("===================")
+	log.Printf("--- Per Second Stats ---")
+	log.Printf("Packets/sec Sent: %d", totalPacketsPerSecSent)
+	log.Printf("Packets/sec Received: %d", totalPacketsPerSecReceived)
+	log.Printf("MB/sec Sent: %.2f", totalBytesPerSecSent)
+	log.Printf("MB/sec Received: %.2f", totalBytesPerSecReceived)
+	log.Printf("===========================")
 }

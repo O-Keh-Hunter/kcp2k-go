@@ -73,6 +73,18 @@ type ClientStats struct {
 	Latency         time.Duration
 	StartTime       time.Time
 	Connected       bool
+	// Per-second statistics
+	LastReportTime    time.Time
+	LastPacketsSent   int64
+	LastPacketsReceived int64
+	LastPacketsLost   int64
+	LastBytesSent     int64
+	LastBytesReceived int64
+	PacketsPerSecSent int64
+	PacketsPerSecReceived int64
+	PacketsPerSecLost int64
+	BytesPerSecSent   float64 // MB/s
+	BytesPerSecReceived float64 // MB/s
 }
 
 type PendingPacket struct {
@@ -81,10 +93,14 @@ type PendingPacket struct {
 }
 
 func NewClient(id, serverID int) *Client {
+	now := time.Now()
 	return &Client{
 		ID:             id,
 		ServerID:       serverID,
-		Stats:          &ClientStats{StartTime: time.Now()},
+		Stats:          &ClientStats{
+			StartTime: now,
+			LastReportTime: now,
+		},
 		stopChan:       make(chan struct{}),
 		pendingPackets: make(map[int]*PendingPacket),
 		packetID:       0,
@@ -292,6 +308,39 @@ func (c *Client) GetStats() ClientStats {
 	return *c.Stats
 }
 
+// Calculate per-second statistics
+func (c *Client) UpdatePerSecondStats() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	
+	now := time.Now()
+	timeDiff := now.Sub(c.Stats.LastReportTime).Seconds()
+	
+	if timeDiff > 0 {
+		// Calculate packets per second
+		packetsSentDiff := c.Stats.PacketsSent - c.Stats.LastPacketsSent
+		packetsReceivedDiff := c.Stats.PacketsReceived - c.Stats.LastPacketsReceived
+		packetsLostDiff := c.Stats.PacketsLost - c.Stats.LastPacketsLost
+		c.Stats.PacketsPerSecSent = int64(float64(packetsSentDiff) / timeDiff)
+		c.Stats.PacketsPerSecReceived = int64(float64(packetsReceivedDiff) / timeDiff)
+		c.Stats.PacketsPerSecLost = int64(float64(packetsLostDiff) / timeDiff)
+		
+		// Calculate bytes per second (MB/s)
+		bytesSentDiff := c.Stats.BytesSent - c.Stats.LastBytesSent
+		bytesReceivedDiff := c.Stats.BytesReceived - c.Stats.LastBytesReceived
+		c.Stats.BytesPerSecSent = float64(bytesSentDiff) / timeDiff / (1024 * 1024)
+		c.Stats.BytesPerSecReceived = float64(bytesReceivedDiff) / timeDiff / (1024 * 1024)
+		
+		// Update last values
+		c.Stats.LastReportTime = now
+		c.Stats.LastPacketsSent = c.Stats.PacketsSent
+		c.Stats.LastPacketsReceived = c.Stats.PacketsReceived
+		c.Stats.LastPacketsLost = c.Stats.PacketsLost
+		c.Stats.LastBytesSent = c.Stats.BytesSent
+		c.Stats.LastBytesReceived = c.Stats.BytesReceived
+	}
+}
+
 type ClientManager struct {
 	Clients    []*Client
 	TotalStats *TotalStats
@@ -307,6 +356,12 @@ type TotalStats struct {
 	TotalBytesReceived   int64
 	AverageLatency       time.Duration
 	PacketLossRate       float64
+	// Per-second statistics
+	TotalPacketsPerSecSent     int64
+	TotalPacketsPerSecReceived int64
+	TotalPacketsPerSecLost     int64
+	TotalBytesPerSecSent       float64 // MB/s
+	TotalBytesPerSecReceived   float64 // MB/s
 }
 
 func NewClientManager() *ClientManager {
@@ -325,10 +380,17 @@ func (cm *ClientManager) GetTotalStats() TotalStats {
 	cm.mu.RLock()
 	defer cm.mu.RUnlock()
 
+	// Update per-second stats for all clients first
+	for _, client := range cm.Clients {
+		client.UpdatePerSecondStats()
+	}
+
 	var totalPacketsSent, totalPacketsReceived, totalPacketsLost int64
 	var totalBytesSent, totalBytesReceived int64
 	var totalLatency time.Duration
 	var connectedClients int64
+	var totalPacketsPerSecSent, totalPacketsPerSecReceived, totalPacketsPerSecLost int64
+	var totalBytesPerSecSent, totalBytesPerSecReceived float64
 
 	for _, client := range cm.Clients {
 		stats := client.GetStats()
@@ -340,6 +402,11 @@ func (cm *ClientManager) GetTotalStats() TotalStats {
 			totalBytesSent += stats.BytesSent
 			totalBytesReceived += stats.BytesReceived
 			totalLatency += stats.Latency
+			totalPacketsPerSecSent += stats.PacketsPerSecSent
+			totalPacketsPerSecReceived += stats.PacketsPerSecReceived
+			totalPacketsPerSecLost += stats.PacketsPerSecLost
+			totalBytesPerSecSent += stats.BytesPerSecSent
+			totalBytesPerSecReceived += stats.BytesPerSecReceived
 		}
 	}
 
@@ -363,6 +430,11 @@ func (cm *ClientManager) GetTotalStats() TotalStats {
 		TotalBytesReceived:   totalBytesReceived,
 		AverageLatency:       avgLatency,
 		PacketLossRate:       packetLossRate,
+		TotalPacketsPerSecSent:     totalPacketsPerSecSent,
+		TotalPacketsPerSecReceived: totalPacketsPerSecReceived,
+		TotalPacketsPerSecLost:     totalPacketsPerSecLost,
+		TotalBytesPerSecSent:       totalBytesPerSecSent,
+		TotalBytesPerSecReceived:   totalBytesPerSecReceived,
 	}
 }
 
@@ -442,6 +514,12 @@ func main() {
 				log.Printf("Total Bytes Sent: %d", stats.TotalBytesSent)
 				log.Printf("Total Bytes Received: %d", stats.TotalBytesReceived)
 				log.Printf("Average Latency: %v", stats.AverageLatency)
+				log.Printf("--- Per Second Stats ---")
+				log.Printf("Packets/sec Sent: %d", stats.TotalPacketsPerSecSent)
+				log.Printf("Packets/sec Received: %d", stats.TotalPacketsPerSecReceived)
+				log.Printf("Packets/sec Lost: %d", stats.TotalPacketsPerSecLost)
+				log.Printf("MB/sec Sent: %.2f", stats.TotalBytesPerSecSent)
+				log.Printf("MB/sec Received: %.2f", stats.TotalBytesPerSecReceived)
 				log.Printf("===========================")
 			}
 		}
@@ -473,7 +551,13 @@ func main() {
 	log.Printf("Total Bytes Sent: %d", finalStats.TotalBytesSent)
 	log.Printf("Total Bytes Received: %d", finalStats.TotalBytesReceived)
 	log.Printf("Average Latency: %v", finalStats.AverageLatency)
-	log.Printf("========================")
+	log.Printf("--- Final Per Second Stats ---")
+	log.Printf("Packets/sec Sent: %d", finalStats.TotalPacketsPerSecSent)
+	log.Printf("Packets/sec Received: %d", finalStats.TotalPacketsPerSecReceived)
+	log.Printf("Packets/sec Lost: %d", finalStats.TotalPacketsPerSecLost)
+	log.Printf("MB/sec Sent: %.2f", finalStats.TotalBytesPerSecSent)
+	log.Printf("MB/sec Received: %.2f", finalStats.TotalBytesPerSecReceived)
+	log.Printf("=============================")
 
 	log.Println("All clients stopped")
 }
