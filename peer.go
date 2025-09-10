@@ -119,6 +119,25 @@ type KcpPeer struct {
 	externalBufferPool *BufferPool
 
 	lock *TrackedMutex
+
+	flushInterval uint32
+}
+
+// GetBuf gets a buffer from the pool
+func (p *KcpPeer) GetBuf(size int) []byte {
+	buf := p.bufferPool.Get()
+	if cap(buf) >= size {
+		return buf[:size]
+	}
+	return make([]byte, size)
+}
+
+// PutBuf returns a buffer to the pool
+func (p *KcpPeer) PutBuf(buf []byte) {
+	if cap(buf) > 0 {
+		buf = buf[:0] // reset length but keep capacity
+		p.bufferPool.Put(buf)
+	}
 }
 
 func (p *KcpPeer) Time() uint32 {
@@ -151,7 +170,7 @@ func NewKcpPeer(conv uint32, cookie uint32, config KcpConfig, handler KcpPeerEve
 	// set cookie after reset so it's not overwritten
 	p.Cookie = cookie
 	p.Handler = handler
-	p.lock = NewTrackedMutex(fmt.Sprintf("KcpPeer-%d", conv), 10*time.Millisecond)
+	p.lock = NewTrackedMutex(fmt.Sprintf("KcpPeer-%d", cookie), 10*time.Millisecond)
 	return p
 }
 
@@ -164,7 +183,7 @@ func NewKcpPeerWithBufferPool(conv uint32, cookie uint32, config KcpConfig, hand
 	// set cookie after reset so it's not overwritten
 	p.Cookie = cookie
 	p.Handler = handler
-	p.lock = NewTrackedMutex(fmt.Sprintf("KcpPeer-%d", conv), 10*time.Millisecond)
+	p.lock = NewTrackedMutex(fmt.Sprintf("KcpPeer-%d", cookie), 10*time.Millisecond)
 	return p
 }
 
@@ -210,19 +229,11 @@ func (p *KcpPeer) Reset(config KcpConfig) {
 	p.Kcp = kcp.NewKCP(0, func(buf []byte, size int) {
 		// 这是 KCP 的输出回调，用于发送可靠消息
 		// 使用池化缓冲区避免内存分配
-		out := p.bufferPool.Get()
-		defer func() {
-			out = out[:0]         // 重置长度
-			p.bufferPool.Put(out) // 归还缓冲区
-		}()
-
-		// 确保缓冲区容量足够
 		requiredSize := size + 5
-		if cap(out) < requiredSize {
-			out = make([]byte, requiredSize)
-		} else {
-			out = out[:requiredSize]
-		}
+		out := p.GetBuf(requiredSize)
+		defer func() {
+			p.PutBuf(out)
+		}()
 
 		// 写入通道头部
 		out[0] = byte(KcpReliable)
@@ -230,7 +241,7 @@ func (p *KcpPeer) Reset(config KcpConfig) {
 		Encode32U(out, 1, p.Cookie)
 		// 写入数据
 		copy(out[5:], buf[:size])
-		// 通过 Handler 发送
+
 		if p.Handler != nil {
 			p.Handler.RawSend(out)
 		}
@@ -243,9 +254,9 @@ func (p *KcpPeer) Reset(config KcpConfig) {
 		nc = 1
 	}
 	p.Kcp.NoDelay(boolToInt(config.NoDelay), int(config.Interval), int(config.FastResend), nc)
-	Log.Debug("KCP Peer: NoDelay %v, Interval %d, FastResend %d, nc %d", config.NoDelay, config.Interval, config.FastResend, nc)
+	// Log.Debug("KCP Peer: NoDelay %v, Interval %d, FastResend %d, nc %d", config.NoDelay, config.Interval, config.FastResend, nc)
 	p.Kcp.WndSize(int(config.SendWindowSize), int(config.ReceiveWindowSize))
-	Log.Debug("KCP Peer: SendWindowSize %d, ReceiveWindowSize %d", config.SendWindowSize, config.ReceiveWindowSize)
+	// Log.Debug("KCP Peer: SendWindowSize %d, ReceiveWindowSize %d", config.SendWindowSize, config.ReceiveWindowSize)
 
 	// 重要：高层需要为每个原始消息添加 1 字节通道
 	// 所以虽然 Kcp.MTU_DEF 是完美的，我们实际上需要告诉 kcp 使用 MTU-1
@@ -255,7 +266,7 @@ func (p *KcpPeer) Reset(config KcpConfig) {
 		mtuKcp = kcp.IKCP_OVERHEAD + 1
 	}
 	p.Kcp.SetMtu(mtuKcp)
-	Log.Debug("KCP Peer: SetMtu %d", mtuKcp)
+	// Log.Debug("KCP Peer: SetMtu %d", mtuKcp)
 
 	// 设置最大重传次数（又名 dead_link）
 	// 通过接口断言直接设置 dead_link 字段
@@ -266,7 +277,7 @@ func (p *KcpPeer) Reset(config KcpConfig) {
 	// 如果 KCP 支持设置 dead_link，则设置它
 	if setter, ok := any(p.Kcp).(kcpDeadLinkSetter); ok {
 		setter.SetDeadLink(uint32(config.MaxRetransmits))
-		Log.Debug("KCP Peer: SetDeadLink %d", config.MaxRetransmits)
+		// Log.Debug("KCP Peer: SetDeadLink %d", config.MaxRetransmits)
 	} else {
 		// 如果没有 SetDeadLink 方法，直接设置字段（需要反射或类型断言）
 		// 由于 xtaci/kcp-go 的 KCP 结构体有 dead_link 字段，我们可以直接访问
@@ -398,23 +409,15 @@ func (p *KcpPeer) ReceiveNextReliable() (KcpHeaderReliable, []byte, func(), bool
 	}
 	p.lock.Unlock()
 
-	// 提取内容（不含头部）
 	// 使用缓冲池避免内存分配
-	message := p.bufferPool.Get()
 	messageSize := msgSize - 1
-
-	// 确保缓冲区容量足够
-	if cap(message) < messageSize {
-		message = make([]byte, messageSize)
-	} else {
-		message = message[:messageSize]
-	}
+	message := p.GetBuf(messageSize)
+	// 提取内容（不含头部）
 	copy(message, p.kcpMessageBuffer[1:msgSize])
 
 	// 创建回收函数
 	recycleFunc := func() {
-		message = message[:0]     // 重置长度
-		p.bufferPool.Put(message) // 归还缓冲区
+		p.PutBuf(message) // 归还缓冲区
 	}
 
 	p.lastReceiveTime = p.Time()
@@ -497,6 +500,9 @@ func (p *KcpPeer) Disconnect() {
 	// 发送断开连接消息
 	p.SendDisconnect()
 
+	// 延迟等待断开连接消息
+	time.Sleep(100 * time.Millisecond)
+
 	// 设置为断开连接，调用事件
 	p.State = KcpDisconnected
 	if p.Handler != nil {
@@ -518,20 +524,13 @@ func (p *KcpPeer) SendDisconnect() {
 
 // SendPing 发送 ping
 func (p *KcpPeer) SendPing() {
-	// 发送 ping 时，包含本地时间戳，这样我们就可以从 pong 计算 RTT
 	// 使用缓冲池避免内存分配
-	pingData := p.bufferPool.Get()
+	pingData := p.GetBuf(4)
 	defer func() {
-		pingData = pingData[:0]    // 重置长度
-		p.bufferPool.Put(pingData) // 归还缓冲区
+		p.PutBuf(pingData) // 归还缓冲区
 	}()
 
-	// 确保缓冲区容量足够
-	if cap(pingData) < 4 {
-		pingData = make([]byte, 4)
-	} else {
-		pingData = pingData[:4]
-	}
+	// 发送 ping 时，包含本地时间戳，这样我们就可以从 pong 计算 RTT
 	Encode32U(pingData, 0, p.Time())
 
 	// 发送 ping 时重置超时计时器
@@ -542,20 +541,13 @@ func (p *KcpPeer) SendPing() {
 
 // SendPong 发送 pong
 func (p *KcpPeer) SendPong(pingTimestamp uint32) {
-	// 发送 pong 时，包含原始 ping 时间戳
 	// 使用缓冲池避免内存分配
-	pongData := p.bufferPool.Get()
+	pongData := p.GetBuf(4)
 	defer func() {
-		pongData = pongData[:0]    // 重置长度
-		p.bufferPool.Put(pongData) // 归还缓冲区
+		p.PutBuf(pongData) // 归还缓冲区
 	}()
 
-	// 确保缓冲区容量足够
-	if cap(pongData) < 4 {
-		pongData = make([]byte, 4)
-	} else {
-		pongData = pongData[:4]
-	}
+	// 发送 pong 时，包含原始 ping 时间戳
 	Encode32U(pongData, 0, pingTimestamp)
 
 	// 发送 pong 时重置超时计时器
@@ -566,13 +558,16 @@ func (p *KcpPeer) SendPong(pingTimestamp uint32) {
 
 // SendReliable 发送可靠消息
 func (p *KcpPeer) SendReliable(header KcpHeaderReliable, content []byte) {
-	start := time.Now()
+	if p.Kcp == nil {
+		if p.Handler != nil {
+			p.Handler.OnError(ErrorCodeInvalidSend, "[KCP] Peer: KCP instance is nil")
+		}
+		return
+	}
 
 	p.lock.LockWithLocation("SendReliable")
 	defer p.lock.Unlock()
 
-	// 阶段1：缓冲区检查
-	bufferCheckStart := time.Now()
 	// 1 字节头部 + 内容需要适合发送缓冲区
 	if 1+len(content) > len(p.kcpSendBuffer) {
 		// 否则内容大于 MaxMessageSize，让用户知道！
@@ -583,10 +578,7 @@ func (p *KcpPeer) SendReliable(header KcpHeaderReliable, content []byte) {
 		}
 		return
 	}
-	bufferCheckTime := time.Since(bufferCheckStart)
 
-	// 阶段2：数据准备
-	dataPrepStart := time.Now()
 	// 写入通道头部
 	p.kcpSendBuffer[0] = byte(header)
 
@@ -594,35 +586,42 @@ func (p *KcpPeer) SendReliable(header KcpHeaderReliable, content []byte) {
 	if len(content) > 0 {
 		copy(p.kcpSendBuffer[1:], content)
 	}
-	dataPrepTime := time.Since(dataPrepStart)
+	messageData := p.kcpSendBuffer[:1+len(content)]
 
-	// 阶段3：Kcp 发送
-	kcpSendStart := time.Now()
-	// 发送到 kcp 进行处理
-	if p.Kcp != nil {
-		sent := p.Kcp.Send(p.kcpSendBuffer[:1+len(content)])
+	// Flow control check: make sure write does not overflow the max sliding window on both sides
+	// This is the core flow control mechanism from kcp-go WriteBuffers
+	waitsnd := p.Kcp.WaitSnd()
+	if waitsnd < int(p.Kcp.GetSndWnd()) && waitsnd < int(p.Kcp.GetRmtWnd()) {
+		// Send the entire message without splitting
+		sent := p.Kcp.Send(messageData)
 		if sent < 0 {
 			if p.Handler != nil {
 				p.Handler.OnError(ErrorCodeInvalidSend,
-					fmt.Sprintf("[KCP] Peer: Send failed with error=%d for content with length=%d", sent, len(content)))
+					fmt.Sprintf("[KCP] Peer: Send failed with error=%d for content with length=%d", sent, len(messageData)))
 			}
+			return
 		}
-	}
-	kcpSendTime := time.Since(kcpSendStart)
 
-	// 总耗时统计
-	totalTime := time.Since(start)
-	if totalTime > 2*time.Millisecond {
-		Log.Warning("[KCP] Peer SendReliable took %v (buffer check: %v, data prep: %v, kcp send: %v) for header %d, content size %d",
-			totalTime, bufferCheckTime, dataPrepTime, kcpSendTime, header, len(content))
+		// Check if we need to flush immediately
+		// Flush immediately if the inflight window is full or approaching full
+		waitsnd = p.Kcp.WaitSnd()
+		if waitsnd >= int(p.Kcp.GetSndWnd()) || waitsnd >= int(p.Kcp.GetRmtWnd()) {
+			// Put the packets on wire immediately if the inflight window is full
+			p.Kcp.Flush(false)
+		}
+	} else {
+		// Flow control: sending window is full, cannot send more data
+		if p.Handler != nil {
+			p.Handler.OnError(ErrorCodeInvalidSend,
+				fmt.Sprintf("[KCP] Peer: Send blocked due to flow control - waitsnd=%d, snd_wnd=%d, rmt_wnd=%d",
+					waitsnd, p.Kcp.GetSndWnd(), p.Kcp.GetRmtWnd()))
+		}
+		return
 	}
 }
 
 // SendUnreliable 发送不可靠消息
 func (p *KcpPeer) SendUnreliable(header KcpHeaderUnreliable, content []byte) {
-	// p.lock.Lock()
-	// defer p.lock.Unlock()
-
 	// 消息大小需要 <= 不可靠最大大小
 	if len(content) > p.UnreliableMax {
 		// 否则内容大于 MaxMessageSize，让用户知道！
@@ -631,19 +630,11 @@ func (p *KcpPeer) SendUnreliable(header KcpHeaderUnreliable, content []byte) {
 	}
 
 	// 从缓冲池获取缓冲区
-	out := p.bufferPool.Get()
-	defer func() {
-		out = out[:0]         // 重置长度
-		p.bufferPool.Put(out) // 归还缓冲区
-	}()
-
-	// 确保缓冲区容量足够
 	requiredSize := 6 + len(content)
-	if cap(out) < requiredSize {
-		out = make([]byte, requiredSize)
-	} else {
-		out = out[:requiredSize]
-	}
+	out := p.GetBuf(requiredSize)
+	defer func() {
+		p.PutBuf(out) // 归还缓冲区
+	}()
 
 	// 写入通道头部
 	// 从 0 开始，1 字节
@@ -708,7 +699,7 @@ func (p *KcpPeer) SendData(data []byte, channel KcpChannel) {
 
 	// 总耗时统计
 	totalTime := time.Since(start)
-	if totalTime > 2*time.Millisecond {
+	if totalTime > 10*time.Millisecond {
 		Log.Warning("[KCP] Peer SendData took %v (validation: %v, timeout reset: %v, send: %v) for channel %d, data size %d",
 			totalTime, validationTime, timeoutResetTime, sendTime, channel, len(data))
 	}
@@ -968,7 +959,16 @@ func (p *KcpPeer) TickOutgoing() {
 		// 在连接状态下也需要调用Update来发送握手消息
 		if p.Kcp != nil {
 			p.lock.LockWithLocation("TickOutgoing_Connected")
-			p.Kcp.Update()
+
+			if p.flushInterval == 0 {
+				p.flushInterval = p.Kcp.Flush(false)
+			} else {
+				now := p.Time()
+				if now >= p.flushInterval {
+					p.flushInterval = p.Kcp.Flush(false)
+				}
+			}
+
 			p.lock.Unlock()
 		}
 	case KcpAuthenticated:
@@ -977,7 +977,16 @@ func (p *KcpPeer) TickOutgoing() {
 		// 更新刷新出消息
 		if p.Kcp != nil {
 			p.lock.LockWithLocation("TickOutgoing_Authenticated")
-			p.Kcp.Update()
+
+			if p.flushInterval == 0 {
+				p.flushInterval = p.Kcp.Flush(false)
+			} else {
+				now := p.Time()
+				if now >= p.flushInterval {
+					p.flushInterval = p.Kcp.Flush(false)
+				}
+			}
+
 			p.lock.Unlock()
 		}
 	case KcpDisconnected:

@@ -30,8 +30,8 @@ echo "启用GC检测以分析内存分配..."
 echo ""
 
 # 启用GC检测和内存分析
-export GODEBUG=gctrace=1,gcpacertrace=1
-export GOMAXPROCS=$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo '4')
+# export GODEBUG=gctrace=1,gcpacertrace=1
+# export GOMAXPROCS=$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo '4')
 
 ./tests/stress_test/stress_test \
     -servers 300 \

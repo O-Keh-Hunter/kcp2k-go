@@ -18,6 +18,10 @@ type MultiClientServerTest struct {
 	clientReceivedA []Message
 	clientReceivedB []Message
 
+	// 连接ID记录
+	connectionIdA int
+	connectionIdB int
+
 	// 连接/断开连接计数器
 	onClientAConnectedCalled    int
 	onClientADisconnectedCalled int
@@ -69,6 +73,13 @@ func (t *MultiClientServerTest) createServer() {
 	t.server = NewKcpServer(
 		func(connectionId int) {
 			t.onServerConnectedCalled++
+			// Record connection IDs based on connection order
+			switch t.onServerConnectedCalled {
+			case 1:
+				t.connectionIdA = connectionId
+			case 2:
+				t.connectionIdB = connectionId
+			}
 		},
 		t.serverOnData,
 		func(connectionId int) {
@@ -118,6 +129,8 @@ func (t *MultiClientServerTest) setUp() {
 	t.serverReceived = make([]Message, 0)
 	t.clientReceivedA = make([]Message, 0)
 	t.clientReceivedB = make([]Message, 0)
+	t.connectionIdA = -1
+	t.connectionIdB = -1
 	t.onClientAConnectedCalled = 0
 	t.onClientADisconnectedCalled = 0
 	t.onClientBConnectedCalled = 0
@@ -148,23 +161,6 @@ func (t *MultiClientServerTest) tearDown() {
 	time.Sleep(10 * time.Millisecond)
 }
 
-// 获取服务器第一个连接ID
-func (t *MultiClientServerTest) serverFirstConnectionId() int {
-	for id := range t.server.connections {
-		return id
-	}
-	return -1
-}
-
-// 获取服务器最后一个连接ID
-func (t *MultiClientServerTest) serverLastConnectionId() int {
-	lastId := -1
-	for id := range t.server.connections {
-		lastId = id
-	}
-	return lastId
-}
-
 // 多次更新服务器和客户端
 func (t *MultiClientServerTest) updateSeveralTimes(amount int) {
 	for i := 0; i < amount; i++ {
@@ -188,12 +184,19 @@ func (t *MultiClientServerTest) connectClientsBlocking(hostname string) {
 		hostname = "127.0.0.1"
 	}
 
-	// 连接客户端A和B
+	// Connect ClientA first and wait for it to be fully connected
 	_ = t.clientA.Connect(hostname, MultiClientTestPort)
+
+	// Wait for ClientA to connect completely
+	for i := 0; i < 100 && !t.clientA.Connected(); i++ {
+		t.updateSeveralTimes(10)
+	}
+
+	// Only connect ClientB after ClientA is fully connected
 	_ = t.clientB.Connect(hostname, MultiClientTestPort)
 
-	// 等待连接建立
-	for i := 0; i < 100 && (!t.clientA.Connected() || !t.clientB.Connected()); i++ {
+	// Wait for ClientB to connect
+	for i := 0; i < 100 && !t.clientB.Connected(); i++ {
 		t.updateSeveralTimes(10)
 	}
 }
@@ -220,12 +223,7 @@ func (t *MultiClientServerTest) sendClientToServerBlocking(client *KcpClient, me
 // 阻塞式服务器到客户端发送消息
 func (t *MultiClientServerTest) sendServerToClientBlocking(connectionId int, message []byte, channel KcpChannel) {
 	t.server.Send(connectionId, message, channel)
-	// 对于不可靠消息，需要更多的更新循环来确保传输
-	if channel == KcpUnreliable {
-		t.updateSeveralTimes(100)
-	} else {
-		t.updateSeveralTimes(10)
-	}
+	t.updateSeveralTimes(10)
 }
 
 // TestConnectAndDisconnectClients 对应 C# 的 ConnectAndDisconnectClients
@@ -354,8 +352,9 @@ func TestServerToClientsReliableMessage(t *testing.T) {
 		t.Fatalf("Failed to start server: %v", err)
 	}
 	test.connectClientsBlocking("")
-	connectionIdA := test.serverFirstConnectionId()
-	connectionIdB := test.serverLastConnectionId()
+	// Use recorded connection IDs instead of helper functions
+	connectionIdA := test.connectionIdA
+	connectionIdB := test.connectionIdB
 
 	message := []byte{0x01, 0x02}
 
@@ -397,8 +396,9 @@ func TestMultiClientServerToClientUnreliableMessage(t *testing.T) {
 		t.Fatalf("Failed to start server: %v", err)
 	}
 	test.connectClientsBlocking("")
-	connectionIdA := test.serverFirstConnectionId()
-	connectionIdB := test.serverLastConnectionId()
+	// Use recorded connection IDs instead of helper functions
+	connectionIdA := test.connectionIdA
+	connectionIdB := test.connectionIdB
 
 	message := []byte{0x03, 0x04}
 

@@ -15,4 +15,4 @@ require (
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 )
 
-replace github.com/xtaci/kcp-go/v5 => github.com/O-Keh-Hunter/kcp-go/v5 v5.6.24-extend-api
+replace github.com/xtaci/kcp-go/v5 => github.com/O-Keh-Hunter/kcp-go/v5 v5.6.24-internal

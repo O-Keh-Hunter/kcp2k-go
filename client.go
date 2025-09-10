@@ -15,7 +15,6 @@ type KcpClient struct {
 	// IO
 	conn       *net.UDPConn
 	remoteAddr *net.UDPAddr
-	localAddr  net.Addr
 
 	// config
 	config KcpConfig
@@ -72,19 +71,18 @@ func (c *KcpClient) OnData(data []byte, channel KcpChannel) {
 
 // OnDisconnected tears down connection and calls user callback.
 func (c *KcpClient) OnDisconnected() {
-	Log.Debug("[KCP] Client: OnDisconnected connectionId: %d", c.peer.Cookie)
-	c.connected = false
 	if c.conn != nil {
 		_ = c.conn.Close()
 	}
+
 	c.conn = nil
 	c.remoteAddr = nil
-	c.localAddr = nil
+	c.connected = false
+
 	if c.onDisconnected != nil {
 		c.onDisconnected()
 	}
-	// 不要设置 active = false，这样 Tick 方法仍然可以工作
-	// active 只在 Connect/Disconnect 时设置
+	Log.Debug("[KCP] Client: OnDisconnected connectionId: %d", c.peer.Cookie)
 }
 
 // OnError forwards error details to user callback.
@@ -97,6 +95,8 @@ func (c *KcpClient) OnError(errorCode ErrorCode, message string) {
 
 // RawSend sends one raw packet over UDP.
 func (c *KcpClient) RawSend(data []byte) {
+	// performance monitoring for onRawSend
+	start := time.Now()
 	if c.conn == nil {
 		return
 	}
@@ -105,6 +105,13 @@ func (c *KcpClient) RawSend(data []byte) {
 		// match C# behavior: treat send errors as info rather than fatal
 		Log.Error("[KCP] Client.RawSend: error sending data: %v", err)
 		return
+	}
+	totalDuration := time.Since(start)
+
+	// log onRawSend performance breakdown
+	if totalDuration > 10*time.Millisecond {
+		Log.Warning("[KCP] Client: RawSend breakdown: total=%v, size=%d",
+			totalDuration, len(data))
 	}
 }
 
@@ -118,7 +125,7 @@ func (c *KcpClient) LocalEndPoint() net.Addr {
 	if c.conn != nil {
 		return c.conn.LocalAddr()
 	}
-	return c.localAddr
+	return nil
 }
 
 // Connect resolves the address, creates UDP socket and starts a fresh peer.
@@ -148,8 +155,12 @@ func (c *KcpClient) Connect(address string, port uint16) error {
 	c.conn = conn
 	c.active = true
 
-	c.conn.SetWriteBuffer(c.config.SendBufferSize)
-	c.conn.SetReadBuffer(c.config.RecvBufferSize)
+	if err := c.conn.SetWriteBuffer(c.config.SendBufferSize); err != nil {
+		Log.Warning("[KCP] Client: SetWriteBuffer failed: %v", err)
+	}
+	if err := c.conn.SetReadBuffer(c.config.RecvBufferSize); err != nil {
+		Log.Warning("[KCP] Client: SetReadBuffer failed: %v", err)
+	}
 
 	// immediately send hello; note cookie is 0 until server responds
 	c.peer.SendHello()
@@ -164,7 +175,7 @@ func (c *KcpClient) Send(data []byte, channel KcpChannel) {
 	}
 	// ensure cookie learned before any send to avoid server drops
 	if c.peer != nil && c.peer.Cookie == 0 {
-		Log.Debug("[KCP] Client: defer send until cookie learned (channel=%d, len=%d)", channel, len(data))
+		Log.Warning("[KCP] Client: defer send until cookie learned (channel=%d, len=%d)", channel, len(data))
 		return
 	}
 	c.peer.SendData(data, channel)
@@ -196,14 +207,7 @@ func (c *KcpClient) RawReceive() ([]byte, bool) {
 	}
 
 	// 使用对象池获取缓冲区，避免频繁分配
-	buf := c.bufferPool.Get()
-	if cap(buf) < n {
-		// 如果池中的缓冲区容量不足，创建新的缓冲区
-		buf = make([]byte, n)
-	} else {
-		// 重新切片到正确的长度
-		buf = buf[:n]
-	}
+	buf := c.getBuf(n)
 	copy(buf, c.rawReceiveBuffer[:n])
 
 	return buf, true
@@ -247,15 +251,6 @@ func (c *KcpClient) RawInput(segment []byte) {
 	}
 }
 
-// PutBuffer returns a buffer to the pool for reuse.
-func (c *KcpClient) PutBuffer(buf []byte) {
-	if cap(buf) > 0 {
-		// 重置长度为0，但保持容量
-		buf = buf[:0]
-		c.bufferPool.Put(buf)
-	}
-}
-
 // TickIncoming polls socket and then lets peer process incoming.
 func (c *KcpClient) TickIncoming() {
 	if c.active {
@@ -268,7 +263,7 @@ func (c *KcpClient) TickIncoming() {
 			}
 			c.RawInput(seg)
 			// 处理完数据后归还缓冲区到池中
-			c.PutBuffer(seg)
+			c.putBuf(seg)
 		}
 	}
 	if c.active {
@@ -287,6 +282,23 @@ func (c *KcpClient) TickOutgoing() {
 func (c *KcpClient) Tick() {
 	c.TickIncoming()
 	c.TickOutgoing()
+}
+
+// getBuf gets a buffer from the pool
+func (c *KcpClient) getBuf(size int) []byte {
+	buf := c.bufferPool.Get()
+	if cap(buf) >= size {
+		return buf[:size]
+	}
+	return make([]byte, size)
+}
+
+// putBuf returns a buffer to the pool
+func (c *KcpClient) putBuf(buf []byte) {
+	if cap(buf) > 0 {
+		buf = buf[:0] // reset length but keep capacity
+		c.bufferPool.Put(buf)
+	}
 }
 
 // GetRTT returns the current round-trip time in milliseconds.

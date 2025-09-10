@@ -355,7 +355,6 @@ func (s *KcpServer) createConnection(connectionId int, remote *net.UDPAddr) *Kcp
 	}
 	onDisconnected := func() {
 		Log.Debug("[KCP] Server: OnDisconnected connectionId: %d", connectionId)
-		// schedule removal
 		// schedule removal and return connection to pool
 		s.mu.Lock()
 		s.toRemove[connectionId] = struct{}{}
