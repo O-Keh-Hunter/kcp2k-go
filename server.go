@@ -7,6 +7,18 @@ import (
 	"time"
 )
 
+// sendTask represents a UDP send task
+type sendTask struct {
+	data   []byte
+	remote *net.UDPAddr
+}
+
+// receiveTask represents a UDP receive task
+type receiveTask struct {
+	data   []byte
+	remote *net.UDPAddr
+}
+
 // KcpServer manages UDP socket and KcpServerConnection instances.
 type KcpServer struct {
 	// callbacks
@@ -37,6 +49,15 @@ type KcpServer struct {
 	// object pools for memory optimization
 	connectionPool *ConnectionPool
 	bufferPoolOpt  *BufferPool
+
+	// async send queue and worker
+	sendQueue  *LockFreeQueue[sendTask]
+	sendSignal chan struct{}
+	sendDone   chan struct{}
+	// async receive queue and worker
+	receiveQueue  *LockFreeQueue[receiveTask]
+	receiveSignal chan struct{}
+	receiveDone   chan struct{}
 }
 
 func NewKcpServer(onConnected func(int), onData func(int, []byte, KcpChannel), onDisconnected func(int), onError func(int, ErrorCode, string), config KcpConfig) *KcpServer {
@@ -64,8 +85,37 @@ func NewKcpServer(onConnected func(int), onData func(int, []byte, KcpChannel), o
 
 func (s *KcpServer) IsActive() bool { return s.conn != nil }
 
-// getBuf gets a buffer from the pool
-func (s *KcpServer) getBuf(size int) []byte {
+// sendWorker processes async send tasks from the lock-free queue
+func (s *KcpServer) sendWorker() {
+	for {
+		select {
+		case <-s.sendDone:
+			return
+		case <-s.sendSignal:
+			for {
+				// Try to dequeue a task
+				if task, ok := s.sendQueue.Dequeue(); ok {
+					if s.conn != nil {
+						_, e := s.conn.WriteToUDP(task.data, task.remote)
+						if e != nil {
+							// only log error if connection is not closed
+							if !errors.Is(e, net.ErrClosed) {
+								Log.Error("[KCP] Server: async sendTo failed: %v", e)
+							}
+						}
+					}
+					// return buffer to pool after sending
+					s.PutBuf(task.data)
+				} else {
+					break
+				}
+			}
+		}
+	}
+}
+
+// GetBuf gets a buffer from the pool
+func (s *KcpServer) GetBuf(size int) []byte {
 	buf := s.bufferPool.Get()
 	if cap(buf) >= size {
 		return buf[:size]
@@ -73,8 +123,8 @@ func (s *KcpServer) getBuf(size int) []byte {
 	return make([]byte, size)
 }
 
-// putBuf returns a buffer to the pool
-func (s *KcpServer) putBuf(buf []byte) {
+// PutBuf returns a buffer to the pool
+func (s *KcpServer) PutBuf(buf []byte) {
 	if cap(buf) > 0 {
 		buf = buf[:0] // reset length but keep capacity
 		s.bufferPool.Put(buf)
@@ -105,20 +155,63 @@ func (s *KcpServer) Start(port uint16) error {
 		return err
 	}
 
+	// Initialize sendDone channel and start send worker
+	s.sendSignal = make(chan struct{}, 1)
+	s.sendDone = make(chan struct{})
+	s.sendQueue = NewLockFreeQueue[sendTask]()
+	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				Log.Error("[KCP] Server: sendWorker panic: %v", r)
+			}
+		}()
+		s.sendWorker()
+	}()
+
+	// initialize receive queue and start workers
+	s.receiveSignal = make(chan struct{}, 1)
+	s.receiveDone = make(chan struct{})
+	s.receiveQueue = NewLockFreeQueue[receiveTask]()
+	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				Log.Error("[KCP] Server: receiveWorker panic: %v", r)
+			}
+		}()
+		s.receiveWorker()
+	}()
+
 	return nil
 }
 
 func (s *KcpServer) Stop() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+
+	// Check if already stopped
+	if s.conn == nil {
+		return
+	}
+
 	for id := range s.connections {
 		delete(s.connections, id)
 	}
 	s.toRemove = make(map[int]struct{})
-	if s.conn != nil {
-		_ = s.conn.Close()
-	}
+
+	_ = s.conn.Close()
 	s.conn = nil
+
+	// stop send worker
+	if s.sendDone != nil {
+		close(s.sendDone)
+		s.sendDone = nil
+	}
+
+	// stop receive worker
+	if s.receiveDone != nil {
+		close(s.receiveDone)
+		s.receiveDone = nil
+	}
 }
 
 func (s *KcpServer) Send(connectionId int, data []byte, channel KcpChannel) {
@@ -127,6 +220,8 @@ func (s *KcpServer) Send(connectionId int, data []byte, channel KcpChannel) {
 	s.mu.RUnlock()
 	if ok {
 		c.Send(data, channel)
+	} else {
+		Log.Warning("[KCP] Server: Send failed, connection %d not found", connectionId)
 	}
 }
 
@@ -136,6 +231,8 @@ func (s *KcpServer) GetSendQueueCount(connectionId int) int {
 	s.mu.RUnlock()
 	if ok {
 		return c.peer.SendQueueCount()
+	} else {
+		Log.Warning("[KCP] Server: GetSendQueueCount failed, connection %d not found", connectionId)
 	}
 	return 0
 }
@@ -146,6 +243,8 @@ func (s *KcpServer) GetSendBufferCount(connectionId int) int {
 	s.mu.RUnlock()
 	if ok {
 		return c.peer.SendBufferCount()
+	} else {
+		Log.Warning("[KCP] Server: GetSendBufferCount failed, connection %d not found", connectionId)
 	}
 	return 0
 }
@@ -156,6 +255,8 @@ func (s *KcpServer) GetReceiveQueueCount(connectionId int) int {
 	s.mu.RUnlock()
 	if ok {
 		return c.peer.ReceiveQueueCount()
+	} else {
+		Log.Warning("[KCP] Server: GetReceiveQueueCount failed, connection %d not found", connectionId)
 	}
 	return 0
 }
@@ -166,6 +267,8 @@ func (s *KcpServer) GetReceiveBufferCount(connectionId int) int {
 	s.mu.RUnlock()
 	if ok {
 		return c.peer.ReceiveBufferCount()
+	} else {
+		Log.Warning("[KCP] Server: GetReceiveBufferCount failed, connection %d not found", connectionId)
 	}
 	return 0
 }
@@ -176,6 +279,8 @@ func (s *KcpServer) Disconnect(connectionId int) {
 	s.mu.RUnlock()
 	if ok {
 		c.Disconnect()
+	} else {
+		Log.Warning("[KCP] Server: Disconnect failed, connection %d not found", connectionId)
 	}
 }
 
@@ -185,6 +290,8 @@ func (s *KcpServer) GetClientEndPoint(connectionId int) *net.UDPAddr {
 	s.mu.RUnlock()
 	if ok {
 		return c.RemoteAddr()
+	} else {
+		Log.Warning("[KCP] Server: GetClientEndPoint failed, connection %d not found", connectionId)
 	}
 	return nil
 }
@@ -197,37 +304,59 @@ func (s *KcpServer) GetConnection(connectionId int) *KcpServerConnection {
 	s.mu.RUnlock()
 	if ok {
 		return c
+	} else {
+		Log.Warning("[KCP] Server: GetConnection failed, connection %d not found", connectionId)
 	}
 	return nil
 }
 
-// receive one datagram non-blocking-ish using deadlines.
-func (s *KcpServer) rawReceiveFrom() ([]byte, *net.UDPAddr, bool) {
-	if s.conn == nil {
-		return nil, nil, false
-	}
-	err := s.conn.SetReadDeadline(time.Now().Add(1 * time.Millisecond))
-	if err != nil {
-		Log.Error("[KCP] Server: SetReadDeadline error: %v", err)
-		return nil, nil, false
-	}
+// ConnectionsCount returns the number of active connections
+func (s *KcpServer) ConnectionsCount() int {
+	s.mu.RLock()
+	count := len(s.connections)
+	s.mu.RUnlock()
+	return count
+}
 
-	n, addr, err := s.conn.ReadFromUDP(s.recvBuf)
-	if err != nil {
-		if errors.Is(err, net.ErrClosed) || isTimeoutError(err) {
-			return nil, nil, false
+// receiveWorker continuously reads UDP packets and queues them for async processing
+func (s *KcpServer) receiveWorker() {
+	for {
+		select {
+		case <-s.receiveDone:
+			return
+		default:
+			// use mutex to safely access conn
+			s.mu.RLock()
+			conn := s.conn
+			s.mu.RUnlock()
+
+			n, addr, err := conn.ReadFromUDP(s.recvBuf)
+			if err != nil {
+				if errors.Is(err, net.ErrClosed) {
+					return
+				}
+				if isTimeoutError(err) {
+					continue
+				}
+				Log.Error("[KCP] Server: ReadFromUDP error: %v", err)
+				continue
+			}
+			if n <= 0 {
+				continue
+			}
+
+			// get buffer from pool and copy data
+			buf := s.GetBuf(n)
+			copy(buf, s.recvBuf[:n])
+
+			// queue the received data for async processing
+			s.receiveQueue.Enqueue(receiveTask{data: buf, remote: addr})
+			select {
+			case s.receiveSignal <- struct{}{}:
+			default:
+			}
 		}
-		Log.Error("[KCP] Server: ReadFromUDP error: %v", err)
-		return nil, nil, false
 	}
-	if n <= 0 {
-		return nil, nil, false
-	}
-	// use buffer pool to reduce GC pressure
-	buf := s.getBuf(n)
-	copy(buf, s.recvBuf[:n])
-
-	return buf, addr, true
 }
 
 func isTimeoutError(err error) bool {
@@ -237,18 +366,32 @@ func isTimeoutError(err error) bool {
 	return false
 }
 
-// TickIncoming: receive UDP, process connections, and tick all.
+// TickIncoming: tick all connections
 func (s *KcpServer) TickIncoming() {
+	if s.receiveQueue == nil {
+		return
+	}
+
 	// input all received messages
 	for {
-		seg, remote, ok := s.rawReceiveFrom()
-		if !ok {
-			break
+		select {
+		case <-s.receiveSignal:
+			for {
+				// Try to dequeue a task
+				if task, ok := s.receiveQueue.Dequeue(); ok {
+					s.processMessage(task.data, task.remote)
+					// return buffer to pool after processing
+					s.PutBuf(task.data)
+				} else {
+					break
+				}
+			}
+		default:
+			goto DRAIN_DONE
 		}
-		s.processMessage(seg, remote)
-		// return buffer to pool after processing
-		s.putBuf(seg)
 	}
+DRAIN_DONE:
+
 	// tick all connections - reuse slice to avoid allocation
 	s.mu.RLock()
 	// reuse existing slice, reset length to 0
@@ -378,13 +521,32 @@ func (s *KcpServer) createConnection(connectionId int, remote *net.UDPAddr) *Kcp
 		}
 	}
 	onRawSend := func(data []byte) {
-		// send back to this remote
+		// performance monitoring for onRawSend
+		start := time.Now()
+
+		// async send using channel to avoid blocking KCP processing
 		if s.conn == nil {
 			return
 		}
-		_, e := s.conn.WriteToUDP(data, remote)
-		if e != nil {
-			Log.Error("[KCP] Server: sendTo failed: %v", e)
+
+		// get buffer from pool to avoid GC pressure
+		dataCopy := s.GetBuf(len(data))
+		copy(dataCopy, data)
+
+		// send task to worker via lock-free queue
+		s.sendQueue.Enqueue(sendTask{data: dataCopy, remote: remote})
+		// signal send worker
+		select {
+		case s.sendSignal <- struct{}{}:
+		default:
+		}
+
+		totalDuration := time.Since(start)
+
+		// log onRawSend performance breakdown
+		if totalDuration > 10*time.Millisecond {
+			Log.Warning("[KcpServerConnection] OnRawSend breakdown: total=%v, size=%d",
+				totalDuration, len(data))
 		}
 	}
 	// use connection pool to get reusable connection

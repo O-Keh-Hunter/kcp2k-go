@@ -4,8 +4,17 @@ import (
 	"errors"
 	"fmt"
 	"net"
-	"time"
 )
+
+// sendTask represents a UDP send task for client
+type clientSendTask struct {
+	data []byte
+}
+
+// receiveTask represents a UDP receive task for client
+type clientReceiveTask struct {
+	data []byte
+}
 
 // KcpClient is the Go implementation mirroring C# KcpClient.
 // It owns the UDP socket and implements KcpPeerEventHandler for IO-agnostic KcpPeer.
@@ -28,6 +37,16 @@ type KcpClient struct {
 	rawReceiveBuffer []byte
 	bufferPool       Pool[[]byte]
 
+	// async send queue and worker
+	sendQueue  *LockFreeQueue[clientSendTask]
+	sendSignal chan struct{}
+	sendDone   chan struct{}
+
+	// async receive queue and worker
+	receiveQueue  *LockFreeQueue[clientReceiveTask]
+	receiveSignal chan struct{}
+	receiveDone   chan struct{}
+
 	// callbacks
 	onConnected    func()
 	onData         func([]byte, KcpChannel)
@@ -45,6 +64,8 @@ func NewKcpClient(onConnected func(), onData func([]byte, KcpChannel), onDisconn
 		onError:          onError,
 		rawReceiveBuffer: make([]byte, config.Mtu),
 		bufferPool:       New(func() []byte { return make([]byte, 0, config.Mtu) }),
+		sendQueue:        NewLockFreeQueue[clientSendTask](),
+		receiveQueue:     NewLockFreeQueue[clientReceiveTask](),
 	}
 	// client has no cookie yet. it will be assigned from first server message.
 	c.peer = NewKcpPeer(0, 0, config, c)
@@ -69,6 +90,17 @@ func (c *KcpClient) OnData(data []byte, channel KcpChannel) {
 
 // OnDisconnected tears down connection and calls user callback.
 func (c *KcpClient) OnDisconnected() {
+	// stop async workers
+	if c.sendDone != nil {
+		close(c.sendDone)
+		c.sendDone = nil
+	}
+	// stop receive worker
+	if c.receiveDone != nil {
+		close(c.receiveDone)
+		c.receiveDone = nil
+	}
+
 	if c.conn != nil {
 		_ = c.conn.Close()
 	}
@@ -91,25 +123,81 @@ func (c *KcpClient) OnError(errorCode ErrorCode, message string) {
 	}
 }
 
-// RawSend sends one raw packet over UDP.
+// sendWorker processes async send tasks from the lock-free queue
+func (c *KcpClient) sendWorker() {
+	for {
+		select {
+		case <-c.sendDone:
+			return
+		case <-c.sendSignal:
+			for {
+				if task, ok := c.sendQueue.Dequeue(); ok {
+					if c.conn != nil {
+						_, err := c.conn.Write(task.data)
+						if err != nil && !errors.Is(err, net.ErrClosed) {
+							Log.Error("[KCP] Client: async send failed: %v", err)
+						}
+					}
+					c.putBuf(task.data)
+				} else {
+					break
+				}
+			}
+		}
+	}
+}
+
+// receiveWorker continuously reads UDP packets and queues them for async processing
+func (c *KcpClient) receiveWorker() {
+	for {
+		select {
+		case <-c.receiveDone:
+			return
+		default:
+			n, _, err := c.conn.ReadFromUDP(c.rawReceiveBuffer)
+			if err != nil {
+				if errors.Is(err, net.ErrClosed) {
+					return
+				}
+				if isTimeoutError(err) {
+					continue
+				}
+				Log.Error("[KCP] Client: ReadFromUDP error: %v", err)
+				continue
+			}
+			if n <= 0 {
+				continue
+			}
+
+			// get buffer from pool and copy data
+			buf := c.getBuf(n)
+			copy(buf, c.rawReceiveBuffer[:n])
+
+			// queue the received data for async processing
+			c.receiveQueue.Enqueue(clientReceiveTask{data: buf})
+			select {
+			case c.receiveSignal <- struct{}{}:
+			default:
+			}
+		}
+	}
+}
+
+// RawSend sends one raw packet over UDP asynchronously.
 func (c *KcpClient) RawSend(data []byte) {
-	// performance monitoring for onRawSend
-	start := time.Now()
 	if c.conn == nil {
 		return
 	}
-	_, err := c.conn.Write(data)
-	if err != nil {
-		// match C# behavior: treat send errors as info rather than fatal
-		Log.Error("[KCP] Client.RawSend: error sending data: %v", err)
-		return
-	}
-	totalDuration := time.Since(start)
 
-	// log onRawSend performance breakdown
-	if totalDuration > 10*time.Millisecond {
-		Log.Warning("[KCP] Client: RawSend breakdown: total=%v, size=%d",
-			totalDuration, len(data))
+	// get buffer from pool and copy data
+	buf := c.getBuf(len(data))
+	copy(buf, data)
+
+	// enqueue for async sending
+	c.sendQueue.Enqueue(clientSendTask{data: buf})
+	select {
+	case c.sendSignal <- struct{}{}:
+	default:
 	}
 }
 
@@ -160,6 +248,28 @@ func (c *KcpClient) Connect(address string, port uint16) error {
 		Log.Warning("[KCP] Client: SetReadBuffer failed: %v", err)
 	}
 
+	// Initialize async workers
+	c.sendSignal = make(chan struct{}, 1)
+	c.sendDone = make(chan struct{})
+	c.receiveSignal = make(chan struct{}, 1)
+	c.receiveDone = make(chan struct{})
+	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				Log.Error("[Client] Client: sendWorker panic: %v", r)
+			}
+		}()
+		c.sendWorker()
+	}()
+	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				Log.Error("[KCP] Client: receiveWorker panic: %v", r)
+			}
+		}()
+		c.receiveWorker()
+	}()
+
 	// immediately send hello; note cookie is 0 until server responds
 	c.peer.SendHello()
 	return nil
@@ -177,38 +287,6 @@ func (c *KcpClient) Send(data []byte, channel KcpChannel) {
 		return
 	}
 	c.peer.SendData(data, channel)
-}
-
-// RawReceive tries to non-blockingly receive a UDP datagram.
-// Returns (segment, true) if something was read, otherwise (nil, false).
-func (c *KcpClient) RawReceive() ([]byte, bool) {
-	if c.conn == nil {
-		return nil, false
-	}
-
-	err := c.conn.SetReadDeadline(time.Now().Add(1 * time.Millisecond))
-	if err != nil {
-		Log.Error("[KCP] Client: SetReadDeadline error: %v", err)
-		return nil, false
-	}
-
-	n, _, err := c.conn.ReadFromUDP(c.rawReceiveBuffer)
-	if err != nil {
-		if errors.Is(err, net.ErrClosed) || isTimeoutError(err) {
-			return nil, false
-		}
-		Log.Error("[KCP] Client: ReadFromUDP error: %v", err)
-		return nil, false
-	}
-	if n <= 0 {
-		return nil, false
-	}
-
-	// 使用对象池获取缓冲区，避免频繁分配
-	buf := c.getBuf(n)
-	copy(buf, c.rawReceiveBuffer[:n])
-
-	return buf, true
 }
 
 // RawInput inserts a single raw datagram into peer.
@@ -249,19 +327,22 @@ func (c *KcpClient) RawInput(segment []byte) {
 	}
 }
 
-// TickIncoming polls socket and then lets peer process incoming.
+// TickIncoming processes async received messages and then lets peer process incoming.
 func (c *KcpClient) TickIncoming() {
 	if c.active {
-		// 限制循环次数以防止无限循环
-		maxReceives := 100
-		for i := 0; i < maxReceives; i++ {
-			seg, ok := c.RawReceive()
-			if !ok {
-				break
+		// process all received messages from async queue
+		select {
+		case <-c.receiveSignal:
+			for {
+				// Try to dequeue a task
+				if task, ok := c.receiveQueue.Dequeue(); ok {
+					c.RawInput(task.data)
+					c.putBuf(task.data)
+				} else {
+					break
+				}
 			}
-			c.RawInput(seg)
-			// 处理完数据后归还缓冲区到池中
-			c.putBuf(seg)
+		default:
 		}
 	}
 	if c.active {
