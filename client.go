@@ -5,8 +5,6 @@ import (
 	"fmt"
 	"net"
 	"time"
-
-	kcp "github.com/xtaci/kcp-go/v5"
 )
 
 // KcpClient is the Go implementation mirroring C# KcpClient.
@@ -235,7 +233,7 @@ func (c *KcpClient) RawInput(segment []byte) {
 	switch KcpChannel(channel) {
 	case KcpReliable:
 		// sanity: reliable path must carry KCP segment
-		if len(message) < kcp.IKCP_OVERHEAD || !(message[4] >= 81 && message[4] <= 84) {
+		if len(message) < IKCP_OVERHEAD || !(message[4] >= IKCP_CMD_PUSH && message[4] <= IKCP_CMD_WINS) {
 			previewLen := len(message)
 			if previewLen > 24 {
 				previewLen = 24

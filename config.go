@@ -1,9 +1,5 @@
 package kcp2k
 
-import (
-	kcp "github.com/xtaci/kcp-go/v5"
-)
-
 // KcpConfig 包含KCP高层协议的全部配置项，对应C#版KcpConfig
 type KcpConfig struct {
 	DualMode          bool
@@ -26,15 +22,15 @@ func DefaultKcpConfig() KcpConfig {
 		DualMode:          false,
 		RecvBufferSize:    1024 * 1024 * 7,
 		SendBufferSize:    1024 * 1024 * 7,
-		Mtu:               kcp.IKCP_MTU_DEF,
+		Mtu:               IKCP_MTU_DEF,
 		NoDelay:           true,
 		Interval:          10,
 		FastResend:        0,
 		CongestionWindow:  false,
-		SendWindowSize:    kcp.IKCP_WND_SND,
-		ReceiveWindowSize: kcp.IKCP_WND_RCV,
+		SendWindowSize:    IKCP_WND_SND,
+		ReceiveWindowSize: IKCP_WND_RCV,
 		Timeout:           DEFAULT_TIMEOUT,
-		MaxRetransmits:    kcp.IKCP_DEADLINK,
+		MaxRetransmits:    IKCP_DEADLINK,
 	}
 }
 

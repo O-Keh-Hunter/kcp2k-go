@@ -63,11 +63,11 @@ func TestMaxSendRate(t *testing.T) {
 	}
 
 	// 验证计算公式是否正确
-	kcpMtu := peer.Kcp.GetMtu()
-	expectedCalculated := peer.Kcp.GetSndWnd() * kcpMtu * 1000 / peer.Kcp.GetInterval()
+	kcpMtu := peer.Kcp.mtu
+	expectedCalculated := peer.Kcp.snd_wnd * kcpMtu * 1000 / peer.Kcp.interval
 	if actual != expectedCalculated {
 		t.Errorf("MaxSendRate() = %d, but calculated %d (snd_wnd=%d, mtu=%d, interval=%d)",
-			actual, expectedCalculated, peer.Kcp.GetSndWnd(), kcpMtu, peer.Kcp.GetInterval())
+			actual, expectedCalculated, peer.Kcp.snd_wnd, kcpMtu, peer.Kcp.interval)
 	}
 
 	// 期望值与C#版本一致：3,824,000
@@ -105,11 +105,11 @@ func TestMaxReceiveRate(t *testing.T) {
 	}
 
 	// 验证计算公式是否正确
-	kcpMtu := peer.Kcp.GetMtu()
-	expectedCalculated := peer.Kcp.GetRcvWnd() * kcpMtu * 1000 / peer.Kcp.GetInterval()
+	kcpMtu := peer.Kcp.mtu
+	expectedCalculated := peer.Kcp.rcv_wnd * kcpMtu * 1000 / peer.Kcp.interval
 	if actual != expectedCalculated {
 		t.Errorf("MaxReceiveRate() = %d, but calculated %d (rcv_wnd=%d, mtu=%d, interval=%d)",
-			actual, expectedCalculated, peer.Kcp.GetRcvWnd(), kcpMtu, peer.Kcp.GetInterval())
+			actual, expectedCalculated, peer.Kcp.rcv_wnd, kcpMtu, peer.Kcp.interval)
 	}
 
 	// 期望值与C#版本一致：15,296,000
@@ -138,12 +138,12 @@ func TestMaxSendRateWithCSharpMTU(t *testing.T) {
 
 	// 验证是否接近C#版本的期望值
 	expected := uint32(3824000)
-	kcpMtu := peer.Kcp.GetMtu()
+	kcpMtu := peer.Kcp.mtu
 	t.Logf("使用C#相同MTU - Go版本结果: %d, C#版本期望: %d, KCP MTU: %d", actual, expected, kcpMtu)
 
 	// 计算期望值：32 * 1199 * 1000 / 10 = 3,836,800
 	// 但C#版本期望是3,824,000，可能有其他因素影响
-	expectedCalculated := peer.Kcp.GetSndWnd() * kcpMtu * 1000 / peer.Kcp.GetInterval()
+	expectedCalculated := peer.Kcp.snd_wnd * kcpMtu * 1000 / peer.Kcp.interval
 	t.Logf("理论计算值: %d", expectedCalculated)
 
 	if actual == 0 {
@@ -169,12 +169,12 @@ func TestMaxReceiveRateWithCSharpMTU(t *testing.T) {
 
 	// 验证是否接近C#版本的期望值
 	expected := uint32(15296000)
-	kcpMtu := peer.Kcp.GetMtu()
+	kcpMtu := peer.Kcp.mtu
 	t.Logf("使用C#相同MTU - Go版本结果: %d, C#版本期望: %d, KCP MTU: %d", actual, expected, kcpMtu)
 
 	// 计算期望值：128 * 1199 * 1000 / 10 = 15,347,200
 	// 但C#版本期望是15,296,000，可能有其他因素影响
-	expectedCalculated := peer.Kcp.GetRcvWnd() * kcpMtu * 1000 / peer.Kcp.GetInterval()
+	expectedCalculated := peer.Kcp.rcv_wnd * kcpMtu * 1000 / peer.Kcp.interval
 	t.Logf("理论计算值: %d", expectedCalculated)
 
 	if actual == 0 {

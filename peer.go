@@ -6,8 +6,6 @@ import (
 	"runtime/debug"
 	"sync"
 	"time"
-
-	"github.com/xtaci/kcp-go/v5"
 )
 
 // TrackedMutex 是一个可以追踪锁耗时的互斥锁包装器
@@ -72,7 +70,7 @@ type KcpPeerEventHandler interface {
 
 type KcpPeer struct {
 	// kcp reliability algorithm
-	Kcp *kcp.KCP
+	Kcp *KCP
 
 	// security cookie to prevent UDP spoofing
 	Cookie uint32
@@ -145,7 +143,7 @@ func (p *KcpPeer) Time() uint32 {
 }
 
 func ReliableMaxMessageSize_Unconstrained(mtu int, rcvWnd uint) int {
-	return (mtu-kcp.IKCP_OVERHEAD-METADATA_SIZE_RELIABLE)*int(rcvWnd-1) - 1
+	return (mtu-IKCP_OVERHEAD-METADATA_SIZE_RELIABLE)*int(rcvWnd-1) - 1
 }
 
 func ReliableMaxMessageSize(mtu int, rcvWnd uint) int {
@@ -226,7 +224,7 @@ func (p *KcpPeer) Reset(config KcpConfig) {
 
 	// 创建新的 KCP 实例，配置输出回调
 	// 对应 C# 版的 kcp = new Kcp(0, RawSendReliable)
-	p.Kcp = kcp.NewKCP(0, func(buf []byte, size int) {
+	p.Kcp = NewKCP(0, func(buf []byte, size int) {
 		// 这是 KCP 的输出回调，用于发送可靠消息
 		// 使用池化缓冲区避免内存分配
 		requiredSize := size + 5
@@ -262,32 +260,14 @@ func (p *KcpPeer) Reset(config KcpConfig) {
 	// 所以虽然 Kcp.MTU_DEF 是完美的，我们实际上需要告诉 kcp 使用 MTU-1
 	// 这样我们仍然可以在之后将头部放入消息中
 	mtuKcp := config.Mtu - METADATA_SIZE_RELIABLE
-	if mtuKcp < kcp.IKCP_OVERHEAD+1 {
-		mtuKcp = kcp.IKCP_OVERHEAD + 1
+	if mtuKcp < IKCP_OVERHEAD+1 {
+		mtuKcp = IKCP_OVERHEAD + 1
 	}
 	p.Kcp.SetMtu(mtuKcp)
 	// Log.Debug("KCP Peer: SetMtu %d", mtuKcp)
 
-	// 设置最大重传次数（又名 dead_link）
-	// 通过接口断言直接设置 dead_link 字段
-	type kcpDeadLinkSetter interface {
-		SetDeadLink(uint32)
-	}
-
-	// 如果 KCP 支持设置 dead_link，则设置它
-	if setter, ok := any(p.Kcp).(kcpDeadLinkSetter); ok {
-		setter.SetDeadLink(uint32(config.MaxRetransmits))
-		// Log.Debug("KCP Peer: SetDeadLink %d", config.MaxRetransmits)
-	} else {
-		// 如果没有 SetDeadLink 方法，直接设置字段（需要反射或类型断言）
-		// 由于 xtaci/kcp-go 的 KCP 结构体有 dead_link 字段，我们可以直接访问
-		if kcpStruct, ok := any(p.Kcp).(*kcp.KCP); ok {
-			// 通过反射或直接字段访问设置 dead_link
-			// 但由于字段是私有的，我们需要添加一个 SetDeadLink 方法到 xtaci/kcp-go
-			// 作为临时解决方案，我们在这里记录配置值
-			_ = kcpStruct // 避免未使用变量警告
-		}
-	}
+	// 设置 dead_link
+	p.Kcp.dead_link = uint32(config.MaxRetransmits)
 }
 
 func boolToInt(b bool) int {
@@ -304,11 +284,11 @@ func (p *KcpPeer) MaxSendRate() uint32 {
 		return 0
 	}
 	// 直接从KCP实例获取值，与C#版本一致：kcp.snd_wnd * kcp.mtu * 1000 / kcp.interval
-	interval := p.Kcp.GetInterval()
+	interval := p.Kcp.interval
 	if interval == 0 {
 		return 0
 	}
-	return p.Kcp.GetSndWnd() * p.Kcp.GetMtu() * 1000 / interval
+	return p.Kcp.snd_wnd * p.Kcp.mtu * 1000 / interval
 }
 
 // MaxReceiveRate 返回理论最大接收速率（字节/秒）
@@ -318,33 +298,31 @@ func (p *KcpPeer) MaxReceiveRate() uint32 {
 		return 0
 	}
 	// 直接从KCP实例获取值，与C#版本一致：kcp.rcv_wnd * kcp.mtu * 1000 / kcp.interval
-	interval := p.Kcp.GetInterval()
+	interval := p.Kcp.interval
 	if interval == 0 {
 		return 0
 	}
-	return p.Kcp.GetRcvWnd() * p.Kcp.GetMtu() * 1000 / interval
+	return p.Kcp.rcv_wnd * p.Kcp.mtu * 1000 / interval
 }
 
 // SendQueueCount 返回发送队列中的消息数量
-// 注意：由于 xtaci/kcp-go 不暴露内部队列，这里返回 0
-// 如需精确计数，需要修改 kcp-go 源码或使用 vendor/replace
 func (p *KcpPeer) SendQueueCount() int {
-	return GetSendQueueCount(p.Kcp)
+	return p.Kcp.snd_queue.Len()
 }
 
 // ReceiveQueueCount 返回接收队列中的消息数量
 func (p *KcpPeer) ReceiveQueueCount() int {
-	return GetReceiveQueueCount(p.Kcp)
+	return p.Kcp.rcv_queue.Len()
 }
 
 // SendBufferCount 返回发送缓冲区中的消息数量
 func (p *KcpPeer) SendBufferCount() int {
-	return GetSendBufferCount(p.Kcp)
+	return p.Kcp.snd_buf.Len()
 }
 
 // ReceiveBufferCount 返回接收缓冲区中的消息数量
 func (p *KcpPeer) ReceiveBufferCount() int {
-	return GetReceiveBufferCount(p.Kcp)
+	return p.Kcp.rcv_buf.Len()
 }
 
 // GetRTT 返回 RTT 值（毫秒）
@@ -432,7 +410,7 @@ func (p *KcpPeer) OnRawInputReliable(message []byte) {
 	}
 
 	// Sanity: only feed valid KCP segments (cmd in 81..84 and length >= IKCP_OVERHEAD)
-	if len(message) < kcp.IKCP_OVERHEAD || !(message[4] >= kcp.IKCP_CMD_PUSH && message[4] <= kcp.IKCP_CMD_WINS) {
+	if len(message) < IKCP_OVERHEAD || !(message[4] >= IKCP_CMD_PUSH && message[4] <= IKCP_CMD_WINS) {
 		return
 	}
 
@@ -591,7 +569,7 @@ func (p *KcpPeer) SendReliable(header KcpHeaderReliable, content []byte) {
 	// Flow control check: make sure write does not overflow the max sliding window on both sides
 	// This is the core flow control mechanism from kcp-go WriteBuffers
 	waitsnd := p.Kcp.WaitSnd()
-	if waitsnd < int(p.Kcp.GetSndWnd()) && waitsnd < int(p.Kcp.GetRmtWnd()) {
+	if waitsnd < int(p.Kcp.snd_wnd) && waitsnd < int(p.Kcp.rmt_wnd) {
 		// Send the entire message without splitting
 		sent := p.Kcp.Send(messageData)
 		if sent < 0 {
@@ -605,16 +583,16 @@ func (p *KcpPeer) SendReliable(header KcpHeaderReliable, content []byte) {
 		// Check if we need to flush immediately
 		// Flush immediately if the inflight window is full or approaching full
 		waitsnd = p.Kcp.WaitSnd()
-		if waitsnd >= int(p.Kcp.GetSndWnd()) || waitsnd >= int(p.Kcp.GetRmtWnd()) {
+		if waitsnd >= int(p.Kcp.snd_wnd) || waitsnd >= int(p.Kcp.rmt_wnd) {
 			// Put the packets on wire immediately if the inflight window is full
-			p.Kcp.Flush(false)
+			p.Kcp.flush(false)
 		}
 	} else {
 		// Flow control: sending window is full, cannot send more data
 		if p.Handler != nil {
 			p.Handler.OnError(ErrorCodeInvalidSend,
 				fmt.Sprintf("[KCP] Peer: Send blocked due to flow control - waitsnd=%d, snd_wnd=%d, rmt_wnd=%d",
-					waitsnd, p.Kcp.GetSndWnd(), p.Kcp.GetRmtWnd()))
+					waitsnd, p.Kcp.snd_wnd, p.Kcp.rmt_wnd))
 		}
 		return
 	}
@@ -737,25 +715,12 @@ func (p *KcpPeer) HandleDeadLink() {
 		return
 	}
 
-	// 通过在 xtaci/kcp-go 中添加导出方法来获取内部 dead_link/state
-	// 为了在未修改依赖时仍可编译运行，这里做接口断言的优雅降级
-	// 请参见下方说明添加 GetState()/GetDeadLink() 到 kcp.KCP
-	type kcpDeadLinkInspector interface {
-		GetState() int
-		GetDeadLink() uint32
-	}
-
-	if k, ok := any(p.Kcp).(kcpDeadLinkInspector); ok {
-		state := k.GetState()
-		// xtaci/kcp-go 在到达 dead_link 时将 state 置为 0xFFFFFFFF
-		// C# 版本检查的是 -1。这里同时兼容两种表示。
-		if state == -1 || state == int(^uint32(0)) {
-			if p.Handler != nil {
-				p.Handler.OnError(ErrorCodeTimeout,
-					fmt.Sprintf("[KCP] Peer: dead_link detected: a message was retransmitted %d times without ack. Disconnecting.", k.GetDeadLink()))
-			}
-			p.Disconnect()
+	if p.Kcp.state == 0xFFFFFFFF {
+		if p.Handler != nil {
+			p.Handler.OnError(ErrorCodeTimeout,
+				fmt.Sprintf("[KCP] Peer: dead_link detected: a message was retransmitted %d times without ack. Disconnecting.", p.Kcp.dead_link))
 		}
+		p.Disconnect()
 	}
 }
 
@@ -793,11 +758,7 @@ func (p *KcpPeer) HandleChoked() {
 		// 否则 Disconnect() 中的单个 Flush 不足以刷新数千条消息来最终传递 'Bye'
 		// 这样更快更健壮
 		if p.Kcp != nil {
-			// 优雅实现：如果 vendored kcp-go 暴露了清队方法，则调用之
-			type kcpSndQueueClearer interface{ ClearSndQueue() }
-			if c, ok := any(p.Kcp).(kcpSndQueueClearer); ok {
-				c.ClearSndQueue()
-			}
+			p.Kcp.snd_buf.Clear()
 		}
 
 		p.Disconnect()
@@ -961,11 +922,11 @@ func (p *KcpPeer) TickOutgoing() {
 			p.lock.LockWithLocation("TickOutgoing_Connected")
 
 			if p.flushInterval == 0 {
-				p.flushInterval = p.Kcp.Flush(false)
+				p.flushInterval = p.Kcp.flush(false)
 			} else {
 				now := p.Time()
 				if now >= p.flushInterval {
-					p.flushInterval = p.Kcp.Flush(false)
+					p.flushInterval = p.Kcp.flush(false)
 				}
 			}
 
@@ -979,11 +940,11 @@ func (p *KcpPeer) TickOutgoing() {
 			p.lock.LockWithLocation("TickOutgoing_Authenticated")
 
 			if p.flushInterval == 0 {
-				p.flushInterval = p.Kcp.Flush(false)
+				p.flushInterval = p.Kcp.flush(false)
 			} else {
 				now := p.Time()
 				if now >= p.flushInterval {
-					p.flushInterval = p.Kcp.Flush(false)
+					p.flushInterval = p.Kcp.flush(false)
 				}
 			}
 
