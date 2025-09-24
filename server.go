@@ -3,8 +3,11 @@ package kcp2k
 import (
 	"errors"
 	"net"
+	"runtime"
 	"sync"
 	"time"
+
+	"golang.org/x/net/ipv4"
 )
 
 // KcpServer manages UDP socket and KcpServerConnection instances.
@@ -37,6 +40,12 @@ type KcpServer struct {
 	// object pools for memory optimization
 	connectionPool *ConnectionPool
 	bufferPoolOpt  *BufferPool
+
+	// batch operation support for Linux optimization
+	ipv4Conn          *ipv4.PacketConn // IPv4 packet connection for batch operations
+	sendBatchMessages []ipv4.Message   // Reusable message slice for send batch operations
+	recvBatchMessages []ipv4.Message   // Reusable message slice for receive batch operations
+	recvBatchBuffers  [][]byte         // Reusable buffer slice for receive batch operations
 }
 
 func NewKcpServer(onConnected func(int), onData func(int, []byte, KcpChannel), onDisconnected func(int), onError func(int, ErrorCode, string), config KcpConfig) *KcpServer {
@@ -58,6 +67,20 @@ func NewKcpServer(onConnected func(int), onData func(int, []byte, KcpChannel), o
 	s.bufferPool = New(func() []byte {
 		return make([]byte, config.Mtu)
 	})
+
+	// initialize batch operation buffers if enabled
+	if config.EnableBatchOps && runtime.GOOS == "linux" {
+		// Initialize send batch buffers
+		s.sendBatchMessages = make([]ipv4.Message, config.BatchSize)
+
+		// Initialize receive batch buffers
+		s.recvBatchMessages = make([]ipv4.Message, config.BatchSize)
+		s.recvBatchBuffers = make([][]byte, config.BatchSize)
+		for i := range s.recvBatchBuffers {
+			s.recvBatchBuffers[i] = make([]byte, config.Mtu)
+			s.recvBatchMessages[i].Buffers = [][]byte{s.recvBatchBuffers[i]}
+		}
+	}
 
 	return s
 }
@@ -105,6 +128,14 @@ func (s *KcpServer) Start(port uint16) error {
 		return err
 	}
 
+	// Initialize IPv4 packet connection for batch operations on Linux
+	if s.config.EnableBatchOps && runtime.GOOS == "linux" {
+		s.ipv4Conn = ipv4.NewPacketConn(s.conn)
+		if s.ipv4Conn == nil {
+			Log.Warning("[KCP] Server: failed to create IPv4 packet connection for batch operations")
+		}
+	}
+
 	return nil
 }
 
@@ -119,6 +150,8 @@ func (s *KcpServer) Stop() {
 		_ = s.conn.Close()
 	}
 	s.conn = nil
+	// Clean up IPv4 packet connection
+	s.ipv4Conn = nil
 }
 
 func (s *KcpServer) Send(connectionId int, data []byte, channel KcpChannel) {
@@ -201,6 +234,67 @@ func (s *KcpServer) GetConnection(connectionId int) *KcpServerConnection {
 	return nil
 }
 
+// recvBatch receives multiple UDP packets in a single system call (Linux only)
+func (s *KcpServer) recvBatch() []struct {
+	data []byte
+	addr *net.UDPAddr
+} {
+	if s.ipv4Conn == nil || runtime.GOOS != "linux" {
+		return nil
+	}
+
+	// Set read deadline for non-blocking behavior
+	err := s.conn.SetReadDeadline(time.Now().Add(1 * time.Millisecond))
+	if err != nil {
+		Log.Error("[KCP] Server: SetReadDeadline error: %v", err)
+		return nil
+	}
+
+	// Read batch of messages
+	n, err := s.ipv4Conn.ReadBatch(s.recvBatchMessages, 0)
+	if err != nil {
+		if errors.Is(err, net.ErrClosed) || isTimeoutError(err) {
+			return nil
+		}
+		Log.Error("[KCP] Server: ReadBatch error: %v", err)
+		return nil
+	}
+
+	if n <= 0 {
+		return nil
+	}
+
+	// Process received messages
+	results := make([]struct {
+		data []byte
+		addr *net.UDPAddr
+	}, 0, n)
+
+	for i := 0; i < n; i++ {
+		msg := &s.recvBatchMessages[i]
+		if msg.N <= 0 {
+			continue
+		}
+
+		// Extract UDP address from message
+		udpAddr, ok := msg.Addr.(*net.UDPAddr)
+		if !ok {
+			continue
+		}
+
+		// Copy data to new buffer from pool
+		buf := s.getBuf(msg.N)
+		copy(buf, s.recvBatchBuffers[i][:msg.N])
+
+		results = append(results, struct {
+			data []byte
+			addr *net.UDPAddr
+		}{data: buf, addr: udpAddr})
+	}
+
+	return results
+}
+
 // receive one datagram non-blocking-ish using deadlines.
 func (s *KcpServer) rawReceiveFrom() ([]byte, *net.UDPAddr, bool) {
 	if s.conn == nil {
@@ -239,16 +333,30 @@ func isTimeoutError(err error) bool {
 
 // TickIncoming: receive UDP, process connections, and tick all.
 func (s *KcpServer) TickIncoming() {
-	// input all received messages
-	for {
-		seg, remote, ok := s.rawReceiveFrom()
-		if !ok {
-			break
+	// Try batch receive first (Linux only)
+	if s.config.EnableBatchOps && runtime.GOOS == "linux" && s.ipv4Conn != nil {
+		batchResults := s.recvBatch()
+		if len(batchResults) > 0 {
+			// Process all batched messages
+			for _, result := range batchResults {
+				s.processMessage(result.data, result.addr)
+				// return buffer to pool after processing
+				s.putBuf(result.data)
+			}
 		}
-		s.processMessage(seg, remote)
-		// return buffer to pool after processing
-		s.putBuf(seg)
+	} else {
+		// Standard single message receive
+		for {
+			seg, remote, ok := s.rawReceiveFrom()
+			if !ok {
+				break
+			}
+			s.processMessage(seg, remote)
+			// return buffer to pool after processing
+			s.putBuf(seg)
+		}
 	}
+
 	// tick all connections - reuse slice to avoid allocation
 	s.mu.RLock()
 	// reuse existing slice, reset length to 0
@@ -333,6 +441,40 @@ func (s *KcpServer) processMessage(segment []byte, remote *net.UDPAddr) {
 	// if it wasn't a proper handshake, it simply won't be added by OnAuthenticated callback.
 }
 
+// sendBatch sends multiple UDP packets in a single system call (Linux only)
+func (s *KcpServer) sendBatch(messages []struct {
+	data []byte
+	addr *net.UDPAddr
+}) error {
+	if s.ipv4Conn == nil || runtime.GOOS != "linux" || len(messages) == 0 {
+		return errors.New("batch send not available")
+	}
+
+	// Prepare batch messages
+	batchSize := len(messages)
+	if batchSize > len(s.sendBatchMessages) {
+		batchSize = len(s.sendBatchMessages)
+	}
+
+	for i := 0; i < batchSize; i++ {
+		s.sendBatchMessages[i].Buffers = [][]byte{messages[i].data}
+		s.sendBatchMessages[i].Addr = messages[i].addr
+	}
+
+	// Send batch
+	n, err := s.ipv4Conn.WriteBatch(s.sendBatchMessages[:batchSize], 0)
+	if err != nil {
+		Log.Error("[KCP] Server: WriteBatch error: %v", err)
+		return err
+	}
+
+	if n != batchSize {
+		Log.Warning("[KCP] Server: WriteBatch sent %d/%d messages", n, batchSize)
+	}
+
+	return nil
+}
+
 func (s *KcpServer) createConnection(connectionId int, remote *net.UDPAddr) *KcpServerConnection {
 	cookie := GenerateCookie()
 	// wrap callbacks to include connectionId and add/remove semantics
@@ -382,9 +524,30 @@ func (s *KcpServer) createConnection(connectionId int, remote *net.UDPAddr) *Kcp
 		if s.conn == nil {
 			return
 		}
-		_, e := s.conn.WriteToUDP(data, remote)
-		if e != nil {
-			Log.Error("[KCP] Server: sendTo failed: %v", e)
+
+		// Try batch send if enabled and available (Linux only)
+		if s.config.EnableBatchOps && runtime.GOOS == "linux" && s.ipv4Conn != nil {
+			// For now, send single message via batch API
+			// In a more advanced implementation, we could collect multiple messages
+			messages := []struct {
+				data []byte
+				addr *net.UDPAddr
+			}{{data: data, addr: remote}}
+
+			err := s.sendBatch(messages)
+			if err != nil {
+				// Fallback to regular send if batch fails
+				_, e := s.conn.WriteToUDP(data, remote)
+				if e != nil {
+					Log.Error("[KCP] Server: sendTo failed: %v", e)
+				}
+			}
+		} else {
+			// Standard single message send
+			_, e := s.conn.WriteToUDP(data, remote)
+			if e != nil {
+				Log.Error("[KCP] Server: sendTo failed: %v", e)
+			}
 		}
 	}
 	// use connection pool to get reusable connection

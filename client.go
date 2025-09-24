@@ -4,7 +4,10 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"runtime"
 	"time"
+
+	"golang.org/x/net/ipv4"
 )
 
 // KcpClient is the Go implementation mirroring C# KcpClient.
@@ -25,8 +28,12 @@ type KcpClient struct {
 	connected bool
 
 	// buffers
-	rawReceiveBuffer []byte
-	bufferPool       Pool[[]byte]
+	rawReceiveBuffer  []byte
+	bufferPool        Pool[[]byte]
+	ipv4Conn          *ipv4.PacketConn // IPv4 packet connection for batch operations
+	sendBatchMessages []ipv4.Message   // batch send buffer
+	recvBatchMessages []ipv4.Message   // batch receive buffer
+	recvBatchBuffers  [][]byte         // buffers for batch receive
 
 	// callbacks
 	onConnected    func()
@@ -75,6 +82,7 @@ func (c *KcpClient) OnDisconnected() {
 
 	c.conn = nil
 	c.remoteAddr = nil
+	c.ipv4Conn = nil // cleanup IPv4 packet connection
 	c.connected = false
 
 	if c.onDisconnected != nil {
@@ -98,6 +106,26 @@ func (c *KcpClient) RawSend(data []byte) {
 	if c.conn == nil {
 		return
 	}
+
+	// try batch send for Linux systems
+	if runtime.GOOS == "linux" && c.config.EnableBatchOps && c.ipv4Conn != nil {
+		// prepare single message for batch send
+		c.sendBatchMessages[0].Buffers = [][]byte{data}
+		c.sendBatchMessages[0].Addr = c.remoteAddr
+		n, err := c.ipv4Conn.WriteBatch(c.sendBatchMessages[:1], 0)
+		if err == nil && n > 0 {
+			// batch send successful
+			totalDuration := time.Since(start)
+			if totalDuration > 10*time.Millisecond {
+				Log.Warning("[KCP] Client: RawSend (batch) breakdown: total=%v, size=%d",
+					totalDuration, len(data))
+			}
+			return
+		}
+		// fallback to standard send if batch send fails
+	}
+
+	// standard UDP send
 	_, err := c.conn.Write(data)
 	if err != nil {
 		// match C# behavior: treat send errors as info rather than fatal
@@ -160,6 +188,18 @@ func (c *KcpClient) Connect(address string, port uint16) error {
 		Log.Warning("[KCP] Client: SetReadBuffer failed: %v", err)
 	}
 
+	// initialize batch operations for Linux
+	if runtime.GOOS == "linux" && c.config.EnableBatchOps {
+		c.ipv4Conn = ipv4.NewPacketConn(c.conn)
+		c.sendBatchMessages = make([]ipv4.Message, c.config.BatchSize)
+		c.recvBatchMessages = make([]ipv4.Message, c.config.BatchSize)
+		c.recvBatchBuffers = make([][]byte, c.config.BatchSize)
+		for i := range c.recvBatchBuffers {
+			c.recvBatchBuffers[i] = make([]byte, c.config.Mtu)
+			c.recvBatchMessages[i].Buffers = [][]byte{c.recvBatchBuffers[i]}
+		}
+	}
+
 	// immediately send hello; note cookie is 0 until server responds
 	c.peer.SendHello()
 	return nil
@@ -177,6 +217,47 @@ func (c *KcpClient) Send(data []byte, channel KcpChannel) {
 		return
 	}
 	c.peer.SendData(data, channel)
+}
+
+// sendBatch attempts to send multiple UDP packets in a single system call
+// Returns the number of packets sent
+func (c *KcpClient) sendBatch(messages []ipv4.Message) int {
+	if c.ipv4Conn == nil || len(messages) == 0 {
+		return 0
+	}
+
+	n, err := c.ipv4Conn.WriteBatch(messages, 0)
+	if err != nil {
+		Log.Error("[KCP] Client: WriteBatch error: %v", err)
+		return 0
+	}
+
+	return n
+}
+
+// recvBatch attempts to receive multiple UDP packets in a single system call
+// Returns the number of packets received
+func (c *KcpClient) recvBatch() int {
+	if c.ipv4Conn == nil || len(c.recvBatchMessages) == 0 {
+		return 0
+	}
+
+	// set non-blocking timeout for batch receive
+	err := c.conn.SetReadDeadline(time.Now().Add(1 * time.Millisecond))
+	if err != nil {
+		return 0
+	}
+
+	n, err := c.ipv4Conn.ReadBatch(c.recvBatchMessages, 0)
+	if err != nil {
+		if isTimeoutError(err) {
+			return 0
+		}
+		Log.Error("[KCP] Client: ReadBatch error: %v", err)
+		return 0
+	}
+
+	return n
 }
 
 // RawReceive tries to non-blockingly receive a UDP datagram.
@@ -252,7 +333,26 @@ func (c *KcpClient) RawInput(segment []byte) {
 // TickIncoming polls socket and then lets peer process incoming.
 func (c *KcpClient) TickIncoming() {
 	if c.active {
-		// 限制循环次数以防止无限循环
+		// try batch receive first (Linux only)
+		if runtime.GOOS == "linux" && c.config.EnableBatchOps && c.ipv4Conn != nil {
+			n := c.recvBatch()
+			for i := 0; i < n; i++ {
+				msg := &c.recvBatchMessages[i]
+				if msg.N > 0 {
+					// get buffer from pool for processing
+					buf := c.getBuf(msg.N)
+					copy(buf, c.recvBatchBuffers[i][:msg.N])
+					c.RawInput(buf)
+					c.putBuf(buf)
+				}
+			}
+			// if batch receive got packets, skip single receive
+			if n > 0 {
+				goto processIncoming
+			}
+		}
+
+		// fallback to single packet receive
 		maxReceives := 100
 		for i := 0; i < maxReceives; i++ {
 			seg, ok := c.RawReceive()
@@ -260,10 +360,11 @@ func (c *KcpClient) TickIncoming() {
 				break
 			}
 			c.RawInput(seg)
-			// 处理完数据后归还缓冲区到池中
 			c.putBuf(seg)
 		}
 	}
+
+processIncoming:
 	if c.active {
 		c.peer.TickIncoming()
 	}
