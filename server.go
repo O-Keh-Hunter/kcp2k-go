@@ -462,10 +462,35 @@ func (s *KcpServer) createServerSocket(dual bool, port uint16) (*net.UDPConn, er
 func (s *KcpServer) processMessage(segment []byte, remote *net.UDPAddr) {
 	id := ConnectionHash(remote)
 	s.mu.RLock()
+	// if connection is being removed, ignore all incoming messages until it's fully removed.
+	if _, ok := s.toRemove[id]; ok {
+		s.mu.RUnlock()
+		return
+	}
 	c, ok := s.connections[id]
 	s.mu.RUnlock()
 	if ok {
 		c.RawInput(segment)
+		return
+	}
+
+	// Ignore stray disconnect messages.
+	// If a client sends 5 unreliable disconnects, the server might have
+	// already closed the connection after the first one. The next 4 would
+	// be for a non-existent connection, causing the server to create a new
+	// peer that is immediately disconnected again.
+	//
+	// Note: this is KcpUnreliable specific.
+	// Reliable disconnects are not a thing.
+	//
+	// Packet structure:
+	// [0] = channel: KcpUnreliable
+	// [1..4] = cookie
+	// [5] = header: KcpHeaderUnrelDisconnect
+	if len(segment) >= 6 &&
+		KcpChannel(segment[0]) == KcpUnreliable &&
+		KcpHeaderUnreliable(segment[5]) == KcpHeaderUnrelDisconnect {
+		Log.Debug("[KCP] Server: ignored stray disconnect message for non-existent connectionId %d", id)
 		return
 	}
 
@@ -497,14 +522,20 @@ func (s *KcpServer) createConnection(connectionId int, remote *net.UDPAddr) *Kcp
 		}
 	}
 	onDisconnected := func() {
-		Log.Debug("[KCP] Server: OnDisconnected connectionId: %d", connectionId)
-		// schedule removal and return connection to pool
 		s.mu.Lock()
-		s.toRemove[connectionId] = struct{}{}
-		if conn, exists := s.connections[connectionId]; exists {
-			// return connection to pool for reuse
-			s.connectionPool.Put(conn)
+		// check if connection exists and not already being removed
+		if _, exists := s.connections[connectionId]; !exists {
+			s.mu.Unlock()
+			return
 		}
+		if _, removing := s.toRemove[connectionId]; removing {
+			s.mu.Unlock()
+			return
+		}
+
+		Log.Debug("[KCP] Server: OnDisconnected connectionId: %d", connectionId)
+		// schedule removal
+		s.toRemove[connectionId] = struct{}{}
 		s.mu.Unlock()
 
 		if s.onDisconnected != nil {
@@ -549,6 +580,7 @@ func (s *KcpServer) createConnection(connectionId int, remote *net.UDPAddr) *Kcp
 				totalDuration, len(data))
 		}
 	}
-	// use connection pool to get reusable connection
-	return s.connectionPool.Get(onConnected, onData, onDisconnected, onError, onRawSend, cookie, remote)
+
+	Log.Debug("[KCP] Server: createConnection connectionId: %d, cookie: %d, remote: %s", connectionId, cookie, remote.String())
+	return NewKcpServerConnection(onConnected, onData, onDisconnected, onError, onRawSend, s.config, cookie, remote)
 }

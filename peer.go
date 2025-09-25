@@ -119,6 +119,8 @@ type KcpPeer struct {
 	lock *TrackedMutex
 
 	flushInterval uint32
+
+	disconnectOnce sync.Once
 }
 
 // GetBuf gets a buffer from the pool
@@ -169,6 +171,7 @@ func NewKcpPeer(conv uint32, cookie uint32, config KcpConfig, handler KcpPeerEve
 	p.Cookie = cookie
 	p.Handler = handler
 	p.lock = NewTrackedMutex(fmt.Sprintf("KcpPeer-%d", cookie), 10*time.Millisecond)
+	Log.Debug("NewKcpPeer conv=%d cookie=%d config=%v", conv, cookie, config)
 	return p
 }
 
@@ -470,22 +473,21 @@ func (p *KcpPeer) OnRawInputUnreliable(message []byte) {
 
 // Disconnect 断开此连接
 func (p *KcpPeer) Disconnect() {
-	// 只有在尚未断开连接时才执行
-	if p.State == KcpDisconnected {
-		return
-	}
+	p.disconnectOnce.Do(func() {
+		Log.Debug("[KCP] Peer: Disconnect connectionId: %d", p.Cookie)
 
-	// 发送断开连接消息
-	p.SendDisconnect()
+		p.State = KcpDisconnected
 
-	// 延迟等待断开连接消息
-	time.Sleep(100 * time.Millisecond)
+		// 发送断开连接消息
+		p.SendDisconnect()
 
-	// 设置为断开连接，调用事件
-	p.State = KcpDisconnected
-	if p.Handler != nil {
-		p.Handler.OnDisconnected()
-	}
+		// 延迟等待断开连接消息
+		time.Sleep(100 * time.Millisecond)
+
+		if p.Handler != nil {
+			p.Handler.OnDisconnected()
+		}
+	})
 }
 
 // SendDisconnect 发送断开连接消息
