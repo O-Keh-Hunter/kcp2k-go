@@ -14,6 +14,9 @@ type KcpConfig struct {
 	ReceiveWindowSize uint
 	Timeout           int
 	MaxRetransmits    uint
+	// Batch operation settings for Linux optimization
+	EnableBatchOps bool // Enable WriteBatch/ReadBatch optimization on Linux
+	BatchSize      int  // Maximum number of messages to batch (default: 32)
 }
 
 // DefaultKcpConfig 返回与C#默认构造函数等价的默认配置
@@ -31,6 +34,9 @@ func DefaultKcpConfig() KcpConfig {
 		ReceiveWindowSize: IKCP_WND_RCV,
 		Timeout:           DEFAULT_TIMEOUT,
 		MaxRetransmits:    IKCP_DEADLINK,
+		// Default batch settings optimized for performance
+		EnableBatchOps: true,
+		BatchSize:      32,
 	}
 }
 
@@ -63,3 +69,7 @@ func WithReceiveWindowSize(v uint) KcpConfigOption {
 }
 func WithTimeout(v int) KcpConfigOption         { return func(c *KcpConfig) { c.Timeout = v } }
 func WithMaxRetransmits(v uint) KcpConfigOption { return func(c *KcpConfig) { c.MaxRetransmits = v } }
+
+// Batch operation configuration options
+func WithEnableBatchOps(v bool) KcpConfigOption { return func(c *KcpConfig) { c.EnableBatchOps = v } }
+func WithBatchSize(v int) KcpConfigOption       { return func(c *KcpConfig) { c.BatchSize = v } }

@@ -3,21 +3,13 @@ package kcp2k
 import (
 	"errors"
 	"net"
+	"runtime"
+	"runtime/debug"
 	"sync"
 	"time"
+
+	"golang.org/x/net/ipv4"
 )
-
-// sendTask represents a UDP send task
-type sendTask struct {
-	data   []byte
-	remote *net.UDPAddr
-}
-
-// receiveTask represents a UDP receive task
-type receiveTask struct {
-	data   []byte
-	remote *net.UDPAddr
-}
 
 // KcpServer manages UDP socket and KcpServerConnection instances.
 type KcpServer struct {
@@ -51,13 +43,19 @@ type KcpServer struct {
 	bufferPoolOpt  *BufferPool
 
 	// async send queue and worker
-	sendQueue  *LockFreeQueue[sendTask]
+	sendQueue  *LockFreeQueue[ipv4.Message]
 	sendSignal chan struct{}
 	sendDone   chan struct{}
 	// async receive queue and worker
-	receiveQueue  *LockFreeQueue[receiveTask]
+	receiveQueue  *LockFreeQueue[ipv4.Message]
 	receiveSignal chan struct{}
 	receiveDone   chan struct{}
+
+	// batch operation support for Linux optimization
+	ipv4Conn          *ipv4.PacketConn // IPv4 packet connection for batch operations
+	sendBatchMessages []ipv4.Message   // Reusable message slice for send batch operations
+	recvBatchMessages []ipv4.Message   // Reusable message slice for receive batch operations
+	recvBatchBuffers  [][]byte         // Reusable buffer slice for receive batch operations
 }
 
 func NewKcpServer(onConnected func(int), onData func(int, []byte, KcpChannel), onDisconnected func(int), onError func(int, ErrorCode, string), config KcpConfig) *KcpServer {
@@ -80,6 +78,22 @@ func NewKcpServer(onConnected func(int), onData func(int, []byte, KcpChannel), o
 		return make([]byte, config.Mtu)
 	})
 
+	// initialize batch operation buffers
+	batchSize := 1
+	if config.EnableBatchOps && runtime.GOOS == "linux" {
+		batchSize = config.BatchSize
+	}
+	// Initialize send batch buffers
+	s.sendBatchMessages = make([]ipv4.Message, batchSize)
+
+	// Initialize receive batch buffers
+	s.recvBatchMessages = make([]ipv4.Message, batchSize)
+	s.recvBatchBuffers = make([][]byte, batchSize)
+	for i := range s.recvBatchBuffers {
+		s.recvBatchBuffers[i] = make([]byte, config.Mtu)
+		s.recvBatchMessages[i].Buffers = [][]byte{s.recvBatchBuffers[i]}
+	}
+
 	return s
 }
 
@@ -92,22 +106,44 @@ func (s *KcpServer) sendWorker() {
 		case <-s.sendDone:
 			return
 		case <-s.sendSignal:
-			for {
-				// Try to dequeue a task
-				if task, ok := s.sendQueue.Dequeue(); ok {
-					if s.conn != nil {
-						_, e := s.conn.WriteToUDP(task.data, task.remote)
-						if e != nil {
-							// only log error if connection is not closed
-							if !errors.Is(e, net.ErrClosed) {
-								Log.Error("[KCP] Server: async sendTo failed: %v", e)
-							}
-						}
-					}
-					// return buffer to pool after sending
-					s.PutBuf(task.data)
+			batchCount := 0
+			messages := s.sendBatchMessages[:0] // reuse slice, reset length
+
+			// Collect tasks for batching
+			for batchCount < len(s.sendBatchMessages) {
+				if msg, ok := s.sendQueue.Dequeue(); ok {
+					messages = append(messages, msg)
+					batchCount++
 				} else {
 					break
+				}
+			}
+
+			// Send batch if we have messages
+			if batchCount > 0 {
+				// Use WriteBatch if supported
+				if s.ipv4Conn != nil {
+					n, err := s.ipv4Conn.WriteBatch(messages, 0)
+					if err != nil {
+						if !errors.Is(err, net.ErrClosed) {
+							Log.Error("[KCP] Server: WriteBatch failed: %v, sent %d/%d messages", err, n, batchCount)
+						}
+					}
+				} else {
+					// Fallback to single writes
+					for _, msg := range messages {
+						data := msg.Buffers[0][:msg.N]
+						udpAddr := msg.Addr.(*net.UDPAddr)
+						_, err := s.conn.WriteToUDP(data, udpAddr)
+						if err != nil && !errors.Is(err, net.ErrClosed) {
+							Log.Error("[KCP] Server: async sendTo failed: %v", err)
+						}
+					}
+				}
+
+				// Return all buffers to pool
+				for _, msg := range messages {
+					s.PutBuf(msg.Buffers[0])
 				}
 			}
 		}
@@ -155,27 +191,52 @@ func (s *KcpServer) Start(port uint16) error {
 		return err
 	}
 
+	// Set deadlines to zero for blocking I/O.
+	if err := s.conn.SetReadDeadline(time.Time{}); err != nil {
+		Log.Warning("[KCP] Server: SetReadDeadline failed: %v", err)
+	}
+	if err := s.conn.SetWriteDeadline(time.Time{}); err != nil {
+		Log.Warning("[KCP] Server: SetWriteDeadline failed: %v", err)
+	}
+
+	// Initialize IPv4 packet connection for batch operations
+	if s.config.EnableBatchOps {
+		s.ipv4Conn = ipv4.NewPacketConn(s.conn)
+		if s.ipv4Conn == nil {
+			Log.Warning("[KCP] Server: Failed to create IPv4 packet connection, falling back to standard operations")
+			s.config.EnableBatchOps = false
+		} else {
+			// Set deadlines to zero for blocking I/O for the packet conn.
+			if err := s.ipv4Conn.SetReadDeadline(time.Time{}); err != nil {
+				Log.Warning("[KCP] Server: SetReadDeadline for ipv4Conn failed: %v", err)
+			}
+			if err := s.ipv4Conn.SetWriteDeadline(time.Time{}); err != nil {
+				Log.Warning("[KCP] Server: SetWriteDeadline for ipv4Conn failed: %v", err)
+			}
+		}
+	}
+
 	// Initialize sendDone channel and start send worker
-	s.sendSignal = make(chan struct{}, 1)
 	s.sendDone = make(chan struct{})
-	s.sendQueue = NewLockFreeQueue[sendTask]()
+	s.sendSignal = make(chan struct{}, 1)
+	s.sendQueue = NewLockFreeQueue[ipv4.Message]()
 	go func() {
 		defer func() {
 			if r := recover(); r != nil {
-				Log.Error("[KCP] Server: sendWorker panic: %v", r)
+				Log.Error("[KCP] Server: sendWorker panic: %v\n%s", r, debug.Stack())
 			}
 		}()
 		s.sendWorker()
 	}()
 
-	// initialize receive queue and start workers
-	s.receiveSignal = make(chan struct{}, 1)
+	// initialize receive queue and worker
 	s.receiveDone = make(chan struct{})
-	s.receiveQueue = NewLockFreeQueue[receiveTask]()
+	s.receiveSignal = make(chan struct{}, 1)
+	s.receiveQueue = NewLockFreeQueue[ipv4.Message]()
 	go func() {
 		defer func() {
 			if r := recover(); r != nil {
-				Log.Error("[KCP] Server: receiveWorker panic: %v", r)
+				Log.Error("[KCP] Server: receiveWorker panic: %v\n%s", r, debug.Stack())
 			}
 		}()
 		s.receiveWorker()
@@ -198,9 +259,6 @@ func (s *KcpServer) Stop() {
 	}
 	s.toRemove = make(map[int]struct{})
 
-	_ = s.conn.Close()
-	s.conn = nil
-
 	// stop send worker
 	if s.sendDone != nil {
 		close(s.sendDone)
@@ -212,6 +270,9 @@ func (s *KcpServer) Stop() {
 		close(s.receiveDone)
 		s.receiveDone = nil
 	}
+
+	_ = s.conn.Close()
+	s.conn = nil
 }
 
 func (s *KcpServer) Send(connectionId int, data []byte, channel KcpChannel) {
@@ -318,42 +379,103 @@ func (s *KcpServer) ConnectionsCount() int {
 	return count
 }
 
-// receiveWorker continuously reads UDP packets and queues them for async processing
+// receiveWorker continuously reads UDP packets and queues them for async processing.
+// It uses ReadBatch for performance if available, otherwise falls back to ReadFromUDP.
 func (s *KcpServer) receiveWorker() {
 	for {
 		select {
 		case <-s.receiveDone:
 			return
 		default:
-			// use mutex to safely access conn
-			s.mu.RLock()
-			conn := s.conn
-			s.mu.RUnlock()
-
-			n, addr, err := conn.ReadFromUDP(s.recvBuf)
-			if err != nil {
-				if errors.Is(err, net.ErrClosed) {
-					return
-				}
-				if isTimeoutError(err) {
-					continue
-				}
-				Log.Error("[KCP] Server: ReadFromUDP error: %v", err)
-				continue
-			}
-			if n <= 0 {
+			if s.conn == nil {
 				continue
 			}
 
-			// get buffer from pool and copy data
-			buf := s.GetBuf(n)
-			copy(buf, s.recvBuf[:n])
+			// Use ReadBatch if supported and configured
+			if s.ipv4Conn != nil {
+				messages := s.recvBatchMessages
+				for i := range messages {
+					messages[i].Buffers[0] = s.recvBatchBuffers[i][:s.config.Mtu]
+					messages[i].N = 0
+					messages[i].Addr = nil
+				}
 
-			// queue the received data for async processing
-			s.receiveQueue.Enqueue(receiveTask{data: buf, remote: addr})
-			select {
-			case s.receiveSignal <- struct{}{}:
-			default:
+				// Read batch of messages
+				n, err := s.ipv4Conn.ReadBatch(messages, 0)
+				if err != nil {
+					if !errors.Is(err, net.ErrClosed) && !isTimeoutError(err) {
+						Log.Error("[KCP] Server: ReadBatch error: %v", err)
+					}
+				} else if n > 0 {
+					// Process received messages
+					for i := 0; i < n; i++ {
+						msg := &messages[i]
+						if msg.N > 0 {
+							// get buffer from pool and copy data
+							buf := s.GetBuf(msg.N)
+							copy(buf, msg.Buffers[0][:msg.N])
+
+							// Extract UDP address from the message
+							var udpAddr *net.UDPAddr
+							if addr, ok := msg.Addr.(*net.UDPAddr); ok {
+								udpAddr = addr
+							} else {
+								// Fallback: try to convert from other address types
+								if msg.Addr != nil {
+									if resolved, err := net.ResolveUDPAddr("udp", msg.Addr.String()); err == nil {
+										udpAddr = resolved
+									}
+								}
+							}
+
+							if udpAddr != nil {
+								// queue the received data for async processing
+								newMsg := ipv4.Message{
+									Buffers: [][]byte{buf},
+									Addr:    udpAddr,
+									N:       msg.N,
+								}
+								s.receiveQueue.Enqueue(newMsg)
+							} else {
+								// Return buffer to pool if we can't process the message
+								s.PutBuf(buf)
+								Log.Warning("[KCP] Server: Failed to extract UDP address from batch message")
+							}
+						}
+					}
+
+					// signal receive worker
+					select {
+					case s.receiveSignal <- struct{}{}:
+					default:
+					}
+				}
+			} else {
+				// Fallback to single read
+				n, addr, err := s.conn.ReadFromUDP(s.recvBuf)
+				if err != nil {
+					if !errors.Is(err, net.ErrClosed) && !isTimeoutError(err) {
+						Log.Error("[KCP] Server: ReadFromUDP error: %v", err)
+					}
+				} else if n > 0 {
+					// get buffer from pool and copy data
+					buf := s.GetBuf(n)
+					copy(buf, s.recvBuf[:n])
+
+					// queue the received data for async processing
+					msg := ipv4.Message{
+						Buffers: [][]byte{buf},
+						Addr:    addr,
+						N:       n,
+					}
+					s.receiveQueue.Enqueue(msg)
+
+					// signal receive worker
+					select {
+					case s.receiveSignal <- struct{}{}:
+					default:
+					}
+				}
 			}
 		}
 	}
@@ -378,10 +500,12 @@ func (s *KcpServer) TickIncoming() {
 		case <-s.receiveSignal:
 			for {
 				// Try to dequeue a task
-				if task, ok := s.receiveQueue.Dequeue(); ok {
-					s.processMessage(task.data, task.remote)
+				if msg, ok := s.receiveQueue.Dequeue(); ok {
+					data := msg.Buffers[0][:msg.N]
+					udpAddr := msg.Addr.(*net.UDPAddr)
+					s.processMessage(data, udpAddr)
 					// return buffer to pool after processing
-					s.PutBuf(task.data)
+					s.PutBuf(msg.Buffers[0])
 				} else {
 					break
 				}
@@ -390,8 +514,8 @@ func (s *KcpServer) TickIncoming() {
 			goto DRAIN_DONE
 		}
 	}
-DRAIN_DONE:
 
+DRAIN_DONE:
 	// tick all connections - reuse slice to avoid allocation
 	s.mu.RLock()
 	// reuse existing slice, reset length to 0
@@ -530,11 +654,16 @@ func (s *KcpServer) createConnection(connectionId int, remote *net.UDPAddr) *Kcp
 		}
 
 		// get buffer from pool to avoid GC pressure
-		dataCopy := s.GetBuf(len(data))
-		copy(dataCopy, data)
+		buf := s.GetBuf(len(data))
+		copy(buf, data)
 
 		// send task to worker via lock-free queue
-		s.sendQueue.Enqueue(sendTask{data: dataCopy, remote: remote})
+		msg := ipv4.Message{
+			Buffers: [][]byte{buf},
+			Addr:    remote,
+			N:       len(buf),
+		}
+		s.sendQueue.Enqueue(msg)
 		// signal send worker
 		select {
 		case s.sendSignal <- struct{}{}:

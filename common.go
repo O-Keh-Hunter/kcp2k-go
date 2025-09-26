@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"net"
+	"time"
 )
 
 // 全局缓冲池用于GenerateCookie函数
@@ -28,7 +29,12 @@ func ResolveHostname(hostname string) ([]net.IP, bool) {
 // If connections drop under heavy load, increase to OS limit.
 // If still not enough, increase the OS limit.
 func ConfigureSocketBuffers(conn *net.UDPConn, recvBufferSize, sendBufferSize int) error {
-	err := conn.SetReadBuffer(recvBufferSize)
+	err := conn.SetDeadline(time.Time{})
+	if err != nil {
+		return err
+	}
+
+	err = conn.SetReadBuffer(recvBufferSize)
 	if err != nil {
 		return err
 	}
